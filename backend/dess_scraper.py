@@ -261,10 +261,12 @@ class DESSMonitorScraper:
 
             # Round aggregated values and sort by date
             results = []
-            for day in sorted(aggregated.keys()):
+            for day in sorted(aggregated.keys(), key=lambda x: int(x)):
                 entry = aggregated[day]
+                # Format time as YYYY-MM-DD for db.py
+                full_date_str = f"{year_month}-{int(entry['time']):02d}"
                 results.append({
-                    "time": entry["time"],
+                    "time": full_date_str,
                     "solar": round(entry["solar"], 1),
                     "load": round(entry["load"], 1),
                     "gridImport": round(entry["gridImport"], 1),
