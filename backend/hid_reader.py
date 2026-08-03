@@ -114,7 +114,7 @@ class HIDInverterReader:
         solar_kw = round(pv_input_power / 1000.0, 2)
         load_kw = round(ac_out_active_power / 1000.0, 2)
         battery_net_power = round(((battery_charge_current - battery_discharge_current) * battery_voltage) / 1000.0, 2)
-        grid_kw = round(max(0.0, load_kw - solar_kw - battery_net_power), 2)
+        grid_kw = round(load_kw + battery_net_power - solar_kw, 2)
 
         return {
           "inverter_id": inv_id,
