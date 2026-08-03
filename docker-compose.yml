@@ -1,0 +1,32 @@
+version: '3.8'
+
+services:
+  # Python HID USB Inverter Telemetry Backend
+  solar-backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: solar_backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    # CRITICAL: Grant privileged hardware access and map host /dev for USB HID devices (/dev/hidraw*)
+    privileged: true
+    volumes:
+      - /dev:/dev
+      - ./backend:/app
+
+  # React Vite Solar Dashboard Frontend
+  solar-frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: solar_frontend
+    restart: unless-stopped
+    ports:
+      - "5173:5173"
+    volumes:
+      - .:/app
+      - /app/node_modules
+    depends_on:
+      - solar-backend

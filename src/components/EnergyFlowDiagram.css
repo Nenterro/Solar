@@ -1,0 +1,132 @@
+.energy-flow-card {
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.energy-flow-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.header-icon {
+  color: var(--accent-color);
+}
+
+.status-pill {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(245, 158, 11, 0.12);
+  color: #fbbf24;
+  padding: 4px 10px;
+  border-radius: 12px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  letter-spacing: 0.5px;
+}
+
+.live-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #fbbf24;
+  box-shadow: 0 0 8px #fbbf24;
+  animation: pulseDot 1.5s infinite alternate;
+}
+
+@keyframes pulseDot {
+  0% { opacity: 0.4; }
+  100% { opacity: 1; }
+}
+
+.svg-canvas-wrapper {
+  width: 100%;
+  height: auto;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  overflow: hidden;
+}
+
+.energy-svg-canvas {
+  width: 100%;
+  height: auto;
+  max-width: 100%;
+  overflow: visible;
+}
+
+/* Cables */
+.cable-base {
+  stroke: rgba(255, 255, 255, 0.08);
+  stroke-width: 4;
+  stroke-linecap: round;
+}
+
+.cable-active {
+  stroke-width: 4;
+  stroke-linecap: round;
+}
+
+.solar-cable { stroke: #fbbf24; }
+.grid-cable { stroke: #ef4444; }
+.export-cable { stroke: #10b981; }
+.battery-cable { stroke: #a855f7; }
+.home-cable { stroke: #60a5fa; }
+
+/* Inverter Hub */
+.hub-outer-ring {
+  fill: rgba(24, 24, 27, 0.95);
+  stroke: var(--accent-color);
+  stroke-width: 2.5;
+  filter: drop-shadow(0 0 12px rgba(245, 158, 11, 0.5));
+}
+
+.hub-inner-core {
+  fill: rgba(245, 158, 11, 0.1);
+  stroke: rgba(245, 158, 11, 0.3);
+  stroke-dasharray: 4 2;
+}
+
+.glow-amber {
+  border-color: rgba(245, 158, 11, 0.5);
+  box-shadow: 0 0 16px rgba(245, 158, 11, 0.25);
+}
+
+.glow-red {
+  border-color: rgba(239, 68, 68, 0.5);
+  box-shadow: 0 0 16px rgba(239, 68, 68, 0.25);
+}
+
+.glow-battery {
+  border-color: rgba(168, 85, 247, 0.5);
+  box-shadow: 0 0 16px rgba(168, 85, 247, 0.25);
+}
+
+.glow-blue {
+  border-color: rgba(59, 130, 246, 0.5);
+  box-shadow: 0 0 16px rgba(59, 130, 246, 0.25);
+}
+
+.val-amber { color: #fbbf24; }
+.val-purple { color: #a855f7; }
+.val-green { color: #10b981; }
+.val-red { color: #ef4444; }
+.val-blue { color: #60a5fa; }
+
+@media (max-width: 768px) {
+  .energy-flow-card {
+    padding: 14px 10px;
+  }
+
+  .svg-canvas-wrapper {
+    overflow: hidden;
+  }
+
+  .energy-svg-canvas {
+    transform: scale(1.0);
+  }
+}

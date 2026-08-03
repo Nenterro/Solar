@@ -1,0 +1,129 @@
+/* =============================================
+   Dashboard — Desktop: fill viewport, no scroll
+   ============================================= */
+.dashboard-main-container {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  gap: 12px;
+  height: calc(100vh - 48px);
+  overflow: hidden;
+}
+
+/* ---- Desktop header ---- */
+.dashboard-header-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  flex-shrink: 0;
+}
+
+.dash-title {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.dash-subtitle {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  margin: 4px 0 0 0;
+}
+
+.header-status-group {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.status-badge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: var(--text-secondary);
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+
+/* ---- Connection dot (shared desktop + mobile) ---- */
+.conn-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.conn-dot.online {
+  background: #10b981;
+  box-shadow: 0 0 10px #10b981;
+}
+
+.conn-dot.offline {
+  background: #f59e0b;
+  box-shadow: 0 0 10px #f59e0b;
+}
+
+/* ---- Energy Matrix Canvas — fills remaining space ---- */
+.matrix-canvas-wrapper {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+}
+
+.matrix-canvas-wrapper .energy-flow-card {
+  width: 100%;
+  margin: 0;
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.matrix-canvas-wrapper .energy-flow-header {
+  flex-shrink: 0;
+}
+
+.matrix-canvas-wrapper .svg-canvas-wrapper {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.matrix-canvas-wrapper .energy-svg-canvas {
+  width: 100%;
+  height: 100%;
+}
+
+/* =============================================
+   Mobile overrides
+   ============================================= */
+@media (max-width: 767px) {
+  .dashboard-main-container {
+    /* mobile header ~60px, bottom nav ~84px, main-content padding 16px*2 */
+    height: calc(100dvh - 76px - 84px - 32px);
+    gap: 0;
+    overflow: hidden;
+  }
+
+  .matrix-canvas-wrapper .energy-flow-card {
+    padding: 8px 6px;
+  }
+
+  .matrix-canvas-wrapper .energy-flow-header {
+    padding: 0 6px;
+  }
+}

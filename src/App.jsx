@@ -1,0 +1,26 @@
+import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import Layout from './components/Layout';
+import Dashboard from './pages/Dashboard';
+import Widgets from './pages/Widgets';
+import Graphs from './pages/Graphs';
+import Data from './pages/Data';
+import Settings from './pages/Settings';
+import { PocketBaseProvider } from './context/PocketBaseContext';
+
+export default function App() {
+  return (
+    <PocketBaseProvider>
+      <BrowserRouter>
+        <Routes>
+          <Route path="/" element={<Layout />}>
+            <Route index element={<Dashboard />} />
+            <Route path="widgets" element={<Widgets />} />
+            <Route path="graphs" element={<Graphs />} />
+            <Route path="data" element={<Data />} />
+            <Route path="settings" element={<Settings />} />
+          </Route>
+        </Routes>
+      </BrowserRouter>
+    </PocketBaseProvider>
+  );
+}

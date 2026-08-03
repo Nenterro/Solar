@@ -1,0 +1,203 @@
+.stats-page-container {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  width: 100%;
+}
+
+.stats-header-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+/* Toolbar & Search */
+.table-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.table-search-box {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: rgba(24, 24, 27, 0.8);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 8px 16px;
+  border-radius: 12px;
+  flex: 1;
+  min-width: 200px;
+}
+
+.search-icon {
+  color: var(--text-secondary);
+}
+
+.table-search-input {
+  background: transparent;
+  border: none;
+  color: #fff;
+  font-size: 0.9rem;
+  width: 100%;
+  outline: none;
+}
+
+.table-search-input::placeholder {
+  color: var(--text-muted);
+}
+
+.csv-export-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  color: #fbbf24;
+  padding: 8px 18px;
+  border-radius: 12px;
+  font-size: 0.85rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.csv-export-btn:hover {
+  background: rgba(245, 158, 11, 0.25);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 14px rgba(245, 158, 11, 0.3);
+}
+
+/* Table Card & Custom Sleek Horizontal Scroll */
+.table-card {
+  padding: 0;
+  overflow: hidden;
+  border-radius: 16px;
+}
+
+.table-scroll-wrapper {
+  overflow-x: auto;
+  width: 100%;
+  padding-bottom: 6px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(245, 158, 11, 0.4) rgba(24, 24, 27, 0.8);
+}
+
+.table-scroll-wrapper::-webkit-scrollbar {
+  height: 6px;
+}
+
+.table-scroll-wrapper::-webkit-scrollbar-track {
+  background: rgba(24, 24, 27, 0.8);
+  border-radius: 6px;
+  margin: 0 12px;
+}
+
+.table-scroll-wrapper::-webkit-scrollbar-thumb {
+  background: linear-gradient(90deg, rgba(245, 158, 11, 0.5), rgba(239, 68, 68, 0.5));
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 0 8px rgba(245, 158, 11, 0.4);
+}
+
+.table-scroll-wrapper::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(90deg, rgba(245, 158, 11, 0.8), rgba(239, 68, 68, 0.8));
+}
+
+.telemetry-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+  font-size: 0.88rem;
+}
+
+.telemetry-table th {
+  background: rgba(255, 255, 255, 0.03);
+  padding: 14px 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  color: var(--text-secondary);
+  font-weight: 600;
+  user-select: none;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.telemetry-table th:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: #fff;
+}
+
+.header-cell-content {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sort-icon {
+  opacity: 0.3;
+  margin-left: auto;
+  transition: opacity 0.2s;
+}
+
+.sort-icon.active {
+  opacity: 1;
+  color: var(--accent-color);
+}
+
+.telemetry-table td {
+  padding: 14px 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  white-space: nowrap;
+}
+
+.telemetry-table tr.data-row:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+/* Summary Totals Row */
+.totals-row {
+  background: rgba(245, 158, 11, 0.06) !important;
+  border-bottom: 2px solid rgba(245, 158, 11, 0.2) !important;
+  font-weight: 700;
+}
+
+.period-cell {
+  color: #fff;
+  font-weight: 600;
+}
+
+.metric-cell {
+  font-weight: 600;
+}
+
+.val-amber { color: #fbbf24; }
+.val-blue { color: #60a5fa; }
+.val-red { color: #ef4444; }
+.val-green { color: #10b981; }
+.val-purple { color: #a855f7; }
+.val-light-purple { color: #c084fc; }
+
+.empty-table-cell {
+  text-align: center;
+  padding: 40px !important;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.data-bottom-spacer {
+  display: none;
+}
+
+@media (max-width: 840px) {
+  .data-bottom-spacer {
+    display: block !important;
+    height: 94px !important;
+    width: 100%;
+    flex-shrink: 0;
+    pointer-events: none;
+  }
+}

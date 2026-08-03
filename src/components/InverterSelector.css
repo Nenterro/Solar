@@ -1,0 +1,43 @@
+.inverter-selector-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+  background: rgba(24, 24, 27, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  padding: 6px 14px;
+  gap: 8px;
+  transition: all 0.2s ease;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+.inverter-selector-wrapper:hover {
+  border-color: rgba(245, 158, 11, 0.4);
+  background: rgba(30, 30, 40, 0.9);
+  box-shadow: 0 4px 16px rgba(245, 158, 11, 0.15);
+}
+
+.inverter-selector-icon {
+  color: var(--accent-color);
+  flex-shrink: 0;
+}
+
+.inverter-selector-dropdown {
+  background: transparent;
+  border: none;
+  color: #fff;
+  font-size: 0.85rem;
+  font-weight: 700;
+  cursor: pointer;
+  outline: none;
+  padding-right: 4px;
+  font-family: inherit;
+}
+
+.inverter-option {
+  background: #18181b;
+  color: #fff;
+  font-weight: 600;
+  padding: 10px;
+}
