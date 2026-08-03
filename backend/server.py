@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import db
 from dess_scraper import dess_scraper
 from hid_reader import HIDInverterReader, INVERTERS_CONFIG
+from battery_bms import bms, start_bms_poller
 
 hid_reader = HIDInverterReader()
 
@@ -60,6 +61,7 @@ def background_telemetry_loop():
 def startup_event():
     t = threading.Thread(target=background_telemetry_loop, daemon=True)
     t.start()
+    start_bms_poller()
 
 @app.get("/")
 def read_root():
@@ -71,6 +73,13 @@ def read_root():
         "hid_connected": hid_reader.is_connected,
         "is_simulated": getattr(hid_reader, 'is_simulated', False)
     }
+
+@app.get("/api/battery")
+def get_battery():
+    """
+    Returns the real-time battery status straight from the BMS via RS485.
+    """
+    return bms.get_latest_data()
 
 @app.get("/api/telemetry")
 def get_telemetry(inverter: str = Query("all")):
