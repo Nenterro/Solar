@@ -1,11 +1,11 @@
 import { useState } from 'react';
 import { Outlet, NavLink, useLocation } from 'react-router-dom';
-import { LayoutDashboard, Sliders, LineChart, Database, Settings, Sun, Pin, PinOff } from 'lucide-react';
+import { LayoutDashboard, Sliders, LineChart, Database, Settings, Sun, Pin, PinOff, Battery } from 'lucide-react';
 import './Layout.css';
 
 const MAIN_NAV_ITEMS = [
   { path: '/', label: 'Dashboard', icon: LayoutDashboard },
-  { path: '/widgets', label: 'Widgets', icon: Sliders },
+  { path: '/battery', label: 'Battery', icon: Battery },
   { path: '/graphs', label: 'Graphs', icon: LineChart },
   { path: '/data', label: 'Data', icon: Database },
 ];
