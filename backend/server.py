@@ -77,39 +77,41 @@ def read_root():
 @app.get("/api/battery")
 def get_battery():
     """
-    Returns the real-time battery status straight from the BMS via RS485.
+    Returns the real-time battery status straight from the BMS via RS485,
+    enriched with current and temperature from the inverter telemetry since the 
+    Knox BMS RS485 has a fixed payload omitting those fields.
     """
-    return bms.get_latest_data()
+    data = bms.get_latest_data()
+    
+    try:
+        # Fallback to inverter aggregate telemetry for current and temperature
+        readings = hid_reader.readings_cache
+        if readings:
+            total_charge = sum(r.get("battery_charge_current", 0.0) for r in readings.values() if "battery_charge_current" in r)
+            total_discharge = sum(r.get("battery_discharge_current", 0.0) for r in readings.values() if "battery_discharge_current" in r)
+            
+            net_current = total_charge - total_discharge
+            data["current"] = net_current
+            data["power"] = round(data["voltage"] * net_current, 2)
+            
+            if net_current > 0.5:
+                data["state"] = "Charging"
+            elif net_current < -0.5:
+                data["state"] = "Discharging"
+            else:
+                data["state"] = "Idle"
+            
+            temps = [r.get("inverter_temp_c", 0.0) for r in readings.values() if "inverter_temp_c" in r]
+            if temps:
+                data["temperature"] = round(sum(temps) / len(temps), 1)
+    except Exception as e:
+        logger.error(f"Error enriching BMS data: {e}")
+        
+    return data
 
 @app.get("/api/telemetry")
 def get_telemetry(inverter: str = Query("all")):
-    readings = hid_reader.poll_all_inverters()
-    if inverter != "all" and inverter in readings:
-        return readings[inverter]
-    
-    # Aggregate system total
-    total_solar = sum(r.get("solar_power_kw", 0.0) for r in readings.values())
-    total_load = sum(r.get("ac_output_power_kw", 0.0) for r in readings.values())
-    total_grid = sum(r.get("grid_power_kw", 0.0) for r in readings.values())
-    total_bat = sum(r.get("battery_power_kw", 0.0) for r in readings.values())
-    socs = [r.get("battery_capacity_pct", 71) for r in readings.values()]
-    avg_soc = sum(socs) / len(socs) if socs else 71.0
-
-    return {
-        "inverter_id": "all",
-        "inverter_sn": "Knox Hybrid Trio System",
-        "solar_power_kw": round(total_solar, 2),
-        "ac_output_power_kw": round(total_load, 2),
-        "grid_power_kw": round(total_grid, 2),
-        "battery_power_kw": round(total_bat, 2),
-        "battery_capacity_pct": round(avg_soc, 0),
-        "battery_voltage": 53.3,
-        "grid_voltage": 223.5,
-        "inverter_temp_c": 50.0,
-        "status": "Normal",
-        "work_mode": "Hybrid Parallel",
-        "readings_count": len(readings)
-    }
+    return hid_reader.get_telemetry_for_selection(inverter)
 
 @app.get("/api/history")
 def get_history(

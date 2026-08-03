@@ -374,7 +374,7 @@ def query_daily_history(date_str: str, inverter_id: str = "all") -> List[Dict[st
         conn = get_db_connection()
         try:
             rows = conn.execute("""
-                SELECT timestamp, solar_w, load_w, grid_w, battery_w, battery_pct
+                SELECT timestamp, solar_w, load_w, grid_w, battery_w, battery_pct, grid_v
                 FROM telemetry_history
                 WHERE timestamp LIKE ? AND inverter_id = ?
                 ORDER BY timestamp ASC
@@ -398,7 +398,8 @@ def query_daily_history(date_str: str, inverter_id: str = "all") -> List[Dict[st
                     "gridExport": abs(min(0.0, grid_kw)),
                     "batteryCharge": max(0.0, bat_kw),
                     "batteryDischarge": abs(min(0.0, bat_kw)),
-                    "batteryLevel": r["battery_pct"]
+                    "batteryLevel": r["battery_pct"],
+                    "gridActive": r["grid_v"] > 90.0
                 })
 
             return results

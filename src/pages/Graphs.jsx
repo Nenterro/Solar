@@ -9,7 +9,8 @@ import {
   BatteryCharging, 
   Gauge, 
   ArrowUpRight, 
-  ArrowDownLeft 
+  ArrowDownLeft,
+  Battery as BatteryIcon
 } from 'lucide-react';
 import { 
   ResponsiveContainer, 
@@ -38,14 +39,14 @@ import InverterSelector from '../components/InverterSelector';
 import { fetchFromBackend } from '../utils/api';
 import './Graphs.css';
 
-// 6 Core Energy Metrics
 const METRICS_CONFIG = [
-  { id: 'solar', label: 'Solar Yield', color: '#fbbf24', icon: Sun, unit: 'kW' },
-  { id: 'load', label: 'Home Load', color: '#60a5fa', icon: Gauge, unit: 'kW' },
-  { id: 'gridImport', label: 'Grid Import', color: '#ef4444', icon: ArrowDownLeft, unit: 'kW' },
-  { id: 'gridExport', label: 'Grid Export', color: '#10b981', icon: ArrowUpRight, unit: 'kW' },
-  { id: 'batteryCharge', label: 'Battery Charge', color: '#a855f7', icon: BatteryCharging, unit: 'kW' },
-  { id: 'batteryDischarge', label: 'Battery Discharge', color: '#c084fc', icon: Zap, unit: 'kW' },
+  { id: 'solar', label: 'Solar Yield', color: '#fbbf24', icon: Sun, unit: 'kW' }, // Amber
+  { id: 'load', label: 'Home Load', color: '#60a5fa', icon: Gauge, unit: 'kW' }, // Blue
+  { id: 'gridImport', label: 'Grid Import', color: '#ef4444', icon: ArrowDownLeft, unit: 'kW' }, // Red
+  { id: 'gridExport', label: 'Grid Export', color: '#10b981', icon: ArrowUpRight, unit: 'kW' }, // Emerald
+  { id: 'batteryCharge', label: 'Battery Charge', color: '#a855f7', icon: BatteryCharging, unit: 'kW' }, // Purple
+  { id: 'batteryDischarge', label: 'Battery Discharge', color: '#f97316', icon: Zap, unit: 'kW' }, // Orange
+  { id: 'batteryLevel', label: 'Battery SOC', color: '#06b6d4', icon: BatteryIcon, unit: '%' }, // Cyan
 ];
 
 /**
@@ -78,7 +79,8 @@ function processDaily24hRecords(rawRecords) {
   const firstNonZero = rawRecords.findIndex(r =>
     (r.solar || 0) > 0 || (r.load || 0) > 0 || 
     (r.gridImport || 0) > 0 || (r.gridExport || 0) > 0 ||
-    (r.batteryCharge || 0) > 0 || (r.batteryDischarge || 0) > 0
+    (r.batteryCharge || 0) > 0 || (r.batteryDischarge || 0) > 0 ||
+    (r.batteryLevel || 0) > 0
   );
 
   // If no non-zero data found, return empty (nothing to graph)
@@ -114,6 +116,7 @@ export default function Graphs() {
     gridExport: true,
     batteryCharge: true,
     batteryDischarge: true,
+    batteryLevel: false,
   });
 
   const toggleMetric = (id) => {
@@ -235,7 +238,7 @@ export default function Graphs() {
               <div key={idx} className="tooltip-row">
                 <span className="tooltip-dot" style={{ backgroundColor: item.color }} />
                 <span className="tooltip-lbl">{config.label}:</span>
-                <span className="tooltip-val">{item.value} {viewMode === 'daily' ? 'kW' : 'kWh'}</span>
+                <span className="tooltip-val">{item.value} {viewMode === 'daily' ? config.unit : (config.unit === '%' ? '%' : 'kWh')}</span>
               </div>
             );
           })}
@@ -314,6 +317,7 @@ export default function Graphs() {
       {/* Metric Toggle Legend Buttons */}
       <div className="metric-toggles-bar">
         {METRICS_CONFIG.map(metric => {
+          if (metric.id === 'batteryLevel' && viewMode !== 'daily') return null;
           const isActive = activeMetrics[metric.id];
           const Icon = metric.icon;
 
@@ -372,6 +376,7 @@ export default function Graphs() {
                     interval="preserveStartEnd"
                   />
                   <YAxis 
+                    yAxisId="left"
                     stroke="var(--text-secondary)" 
                     fontSize={11} 
                     tickLine={false} 
@@ -379,12 +384,25 @@ export default function Graphs() {
                     unit=" kW"
                     domain={[0, (dataMax) => (dataMax <= 0 ? 1 : Math.ceil(dataMax * 1.15))]}
                   />
+                  {activeMetrics.batteryLevel && (
+                    <YAxis 
+                      yAxisId="right"
+                      orientation="right"
+                      stroke="#10b981" 
+                      fontSize={11} 
+                      tickLine={false} 
+                      axisLine={false} 
+                      unit=" %"
+                      domain={[0, 100]}
+                    />
+                  )}
                   <Tooltip content={<CustomTooltip />} />
 
                   {METRICS_CONFIG.map(m => (
                     activeMetrics[m.id] && (
                       <Area 
                         key={m.id}
+                        yAxisId={m.unit === '%' ? 'right' : 'left'}
                         type="monotone" 
                         dataKey={m.id} 
                         name={m.label}
@@ -413,8 +431,9 @@ export default function Graphs() {
                   />
                   <Tooltip content={<CustomTooltip />} />
 
-                  {METRICS_CONFIG.map(m => (
-                    activeMetrics[m.id] && (
+                  {METRICS_CONFIG.map(m => {
+                    if (m.id === 'batteryLevel') return null;
+                    return activeMetrics[m.id] && (
                       <Bar 
                         key={m.id}
                         dataKey={m.id} 
@@ -423,8 +442,8 @@ export default function Graphs() {
                         radius={[4, 4, 0, 0]} 
                         maxBarSize={16}
                       />
-                    )
-                  ))}
+                    );
+                  })}
                 </BarChart>
               )}
             </ResponsiveContainer>
@@ -450,6 +469,7 @@ export default function Graphs() {
       {/* Summary Totals Grid Card */}
       <div className="totals-summary-grid">
         {METRICS_CONFIG.map(metric => {
+          if (metric.id === 'batteryLevel') return null;
           const val = summaryTotals[metric.id] || 0;
           const Icon = metric.icon;
 

@@ -206,7 +206,18 @@ class HIDInverterReader:
         total_grid = round(sum(r.get("grid_power_kw", 0.0) for r in readings_list), 2)
         
         valid_soc = [r.get("battery_capacity_pct", 71) for r in readings_list if r.get("battery_capacity_pct")]
-        avg_soc = round(sum(valid_soc) / len(valid_soc)) if valid_soc else 71
+        avg_soc = round(sum(valid_soc) / len(valid_soc), 2) if valid_soc else 71
+
+        grid_voltages = [r.get("grid_voltage", 0) for r in readings_list if r.get("grid_voltage", 0) > 0]
+        avg_grid_v = round(sum(grid_voltages) / len(grid_voltages), 1) if grid_voltages else 0.0
+
+        grid_freqs = [r.get("grid_frequency", 0) for r in readings_list if r.get("grid_frequency", 0) > 0]
+        avg_grid_f = round(sum(grid_freqs) / len(grid_freqs), 1) if grid_freqs else 0.0
+
+        temps = [r.get("inverter_temp_c", 0) for r in readings_list if r.get("inverter_temp_c", 0) > 0]
+        avg_temp = round(sum(temps) / len(temps), 1) if temps else 0.0
+
+        is_grid_active = any(r.get("grid_active", False) for r in readings_list)
 
         agg_data = {
           "inverter_id": "all",
@@ -220,10 +231,10 @@ class HIDInverterReader:
           "battery_power_kw": total_battery,
           "battery_capacity_pct": avg_soc,
           "battery_voltage": 53.3,
-          "grid_voltage": 223.5,
-          "grid_frequency": 50.0,
-          "grid_active": True,
-          "inverter_temp_c": 50.0,
+          "grid_voltage": avg_grid_v,
+          "grid_frequency": avg_grid_f,
+          "grid_active": is_grid_active,
+          "inverter_temp_c": avg_temp,
           "load_percentage": round((total_load / 15.0) * 100, 1)
         }
         db.update_realtime("all", agg_data)

@@ -1,18 +1,30 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Outlet, NavLink, useLocation } from 'react-router-dom';
-import { LayoutDashboard, Sliders, LineChart, Database, Settings, Sun, Pin, PinOff, Battery } from 'lucide-react';
+import { LayoutDashboard, Sliders, LineChart, Database, Settings, Sun, Pin, PinOff, Battery, Power, MoreHorizontal } from 'lucide-react';
 import './Layout.css';
 
 const MAIN_NAV_ITEMS = [
   { path: '/', label: 'Dashboard', icon: LayoutDashboard },
   { path: '/battery', label: 'Battery', icon: Battery },
+  { path: '/grid', label: 'Grid', icon: Power },
   { path: '/graphs', label: 'Graphs', icon: LineChart },
   { path: '/data', label: 'Data', icon: Database },
 ];
 
 const SETTINGS_ITEM = { path: '/settings', label: 'Settings', icon: Settings };
 
-const ALL_NAV_ITEMS = [...MAIN_NAV_ITEMS, SETTINGS_ITEM];
+// Mobile Nav Structure
+const MOBILE_MAIN_ITEMS = [
+  { path: '/', label: 'Dashboard', icon: LayoutDashboard },
+  { path: '/battery', label: 'Battery', icon: Battery },
+  { path: '/grid', label: 'Grid', icon: Power },
+  { path: '/graphs', label: 'Graphs', icon: LineChart },
+];
+
+const MOBILE_MORE_ITEMS = [
+  { path: '/data', label: 'Data', icon: Database },
+  { path: '/settings', label: 'Settings', icon: Settings },
+];
 
 function Sidebar({ isPinned, togglePin }) {
   return (
@@ -56,19 +68,55 @@ function Sidebar({ isPinned, togglePin }) {
 }
 
 function BottomNav() {
+  const [showMore, setShowMore] = useState(false);
+  const location = useLocation();
+
+  // Close more menu when navigating
+  useEffect(() => {
+    setShowMore(false);
+  }, [location]);
+
   return (
-    <nav className="bottom-nav mobile-only">
-      {ALL_NAV_ITEMS.map((item) => (
-        <NavLink 
-          key={item.path} 
-          to={item.path} 
-          className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
-          title={item.label}
+    <>
+      <nav className="bottom-nav mobile-only">
+        {MOBILE_MAIN_ITEMS.map((item) => (
+          <NavLink 
+            key={item.path} 
+            to={item.path} 
+            className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
+            title={item.label}
+          >
+            <item.icon size={22} />
+          </NavLink>
+        ))}
+        <button 
+          className={`nav-item ${showMore ? 'active' : ''}`} 
+          onClick={() => setShowMore(!showMore)}
         >
-          <item.icon size={22} />
-        </NavLink>
-      ))}
-    </nav>
+          <MoreHorizontal size={22} />
+        </button>
+      </nav>
+
+      {/* More Menu Popup */}
+      {showMore && (
+        <div className="mobile-more-overlay mobile-only" onClick={() => setShowMore(false)}>
+          <div className="mobile-more-menu glass-panel" onClick={e => e.stopPropagation()}>
+            <div className="more-menu-header">More</div>
+            {MOBILE_MORE_ITEMS.map(item => (
+              <NavLink 
+                key={item.path}
+                to={item.path}
+                className={({ isActive }) => `more-menu-item ${isActive ? 'active' : ''}`}
+                onClick={() => setShowMore(false)}
+              >
+                <item.icon size={20} />
+                <span>{item.label}</span>
+              </NavLink>
+            ))}
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 
