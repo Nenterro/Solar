@@ -44,15 +44,12 @@ def background_telemetry_loop():
             if now_sec - last_dess_poll_time >= 600:
                 last_dess_poll_time = now_sec
                 today_str = datetime.now(db.PKT).strftime("%Y-%m-%d")
-                month_str = today_str[:7]
                 
-                # Fetch daily totals for current month and save today's record
-                month_records = dess_scraper.fetch_daily_totals_for_month(month_str, "all")
-                if month_records:
-                    today_records = [r for r in month_records if r.get("time") == today_str]
-                    if today_records:
-                        db.save_daily_totals(today_records, "all")
-                        logger.info(f"Auto-updated current day ({today_str}) totals from DESS cloud")
+                # Fetch daily totals for current day only
+                today_records = dess_scraper.fetch_daily_totals_for_day(today_str, "all")
+                if today_records:
+                    db.save_daily_totals(today_records, "all")
+                    logger.info(f"Auto-updated current day ({today_str}) totals from DESS cloud")
 
         except Exception as e:
             logger.error(f"Error in background telemetry loop: {e}")

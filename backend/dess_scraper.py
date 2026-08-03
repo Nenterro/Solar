@@ -158,6 +158,55 @@ class DESSMonitorScraper:
             
         return results
 
+    def fetch_daily_totals_for_day(self, date_str: str, inverter_id: str = "all") -> List[Dict[str, Any]]:
+        """
+        Fetch daily kWh totals for a specific single day.
+        Aggregates across all 3 inverters when inverter_id is 'all'.
+        """
+        try:
+            if not self.token:
+                if not self.login():
+                    return []
+
+            if inverter_id == "all":
+                devices = INVERTER_DEVICES
+            else:
+                devices = [d for d in INVERTER_DEVICES if d["id"] == inverter_id]
+                if not devices:
+                    devices = INVERTER_DEVICES
+
+            aggregated = {
+                "time": date_str[-2:],  # Use just the day number for consistency if needed, or date_str
+                "solar": 0.0, "load": 0.0,
+                "gridImport": 0.0, "gridExport": 0.0,
+                "batteryCharge": 0.0, "batteryDischarge": 0.0
+            }
+            
+            # Note: For consistency with how db.py expects time format (YYYY-MM-DD)
+            # we will return date_str as "time"
+            aggregated["time"] = date_str
+
+            for dev in devices:
+                totals = self._fetch_daily_totals_for_day(dev["sn"], dev["pn"], date_str)
+                if not totals:
+                    continue
+
+                aggregated["solar"] += totals.get("solar", 0.0)
+                aggregated["load"] += totals.get("load", 0.0)
+                aggregated["gridImport"] += totals.get("gridImport", 0.0)
+                aggregated["gridExport"] += totals.get("gridExport", 0.0)
+                aggregated["batteryCharge"] += totals.get("batteryCharge", 0.0)
+                aggregated["batteryDischarge"] += totals.get("batteryDischarge", 0.0)
+
+            # Round off the aggregated values
+            for k in ["solar", "load", "gridImport", "gridExport", "batteryCharge", "batteryDischarge"]:
+                aggregated[k] = round(aggregated[k], 1)
+
+            return [aggregated]
+        except Exception as e:
+            logger.error(f"Error fetching daily totals for {date_str} from DESS: {e}")
+            return []
+
     def fetch_daily_totals_for_month(self, year_month: str, inverter_id: str = "all") -> List[Dict[str, Any]]:
         """
         Fetch daily kWh totals for a given month (YYYY-MM) from DESSMonitor cloud.
