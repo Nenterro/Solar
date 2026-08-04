@@ -136,7 +136,20 @@ def log_telemetry_snapshot(readings: Dict[str, Dict[str, Any]]):
             time_str = now_pkt.strftime("%Y-%m-%d %H:%M:%S")
 
             # 1. Insert per-inverter rows
+            valid_readings = {}
             for inv_id, r in readings.items():
+                solar_kw = r.get("solar_power_kw", 0.0)
+                grid_kw = r.get("grid_power_kw", 0.0)
+                bat_kw = r.get("battery_power_kw", 0.0)
+                load_kw = r.get("ac_output_power_kw", 0.0)
+                
+                # Modbus glitch filter (>100kW is physically impossible for residential)
+                if abs(solar_kw) > 100.0 or abs(grid_kw) > 100.0 or abs(bat_kw) > 100.0 or abs(load_kw) > 100.0:
+                    logger.warning(f"Outlier detected for {inv_id}: bat={bat_kw}, grid={grid_kw}. Skipping.")
+                    continue
+                
+                valid_readings[inv_id] = r
+
                 conn.execute("""
                     INSERT INTO telemetry_history 
                     (timestamp, inverter_id, solar_w, load_w, grid_w, battery_w, battery_pct, battery_v, grid_v, temp_c)
@@ -155,21 +168,27 @@ def log_telemetry_snapshot(readings: Dict[str, Dict[str, Any]]):
                 ))
 
             # 2. Insert combined system total row ('all') with real averages
-            total_solar = sum(r.get("solar_power_kw", 0.0) * 1000.0 for r in readings.values())
-            total_load = sum(r.get("ac_output_power_kw", 0.0) * 1000.0 for r in readings.values())
-            total_grid = sum(r.get("grid_power_kw", 0.0) * 1000.0 for r in readings.values())
-            total_bat = sum(r.get("battery_power_kw", 0.0) * 1000.0 for r in readings.values())
+            readings_to_sum = valid_readings.values()
             
-            socs = [r.get("battery_capacity_pct", 0.0) for r in readings.values()]
+            if not readings_to_sum:
+                conn.commit()
+                return
+
+            total_solar = sum(r.get("solar_power_kw", 0.0) * 1000.0 for r in readings_to_sum)
+            total_load = sum(r.get("ac_output_power_kw", 0.0) * 1000.0 for r in readings_to_sum)
+            total_grid = sum(r.get("grid_power_kw", 0.0) * 1000.0 for r in readings_to_sum)
+            total_bat = sum(r.get("battery_power_kw", 0.0) * 1000.0 for r in readings_to_sum)
+            
+            socs = [r.get("battery_capacity_pct", 0.0) for r in readings_to_sum]
             avg_soc = sum(socs) / len(socs) if socs else 0.0
             
-            bat_vs = [r.get("battery_voltage", 0.0) for r in readings.values()]
+            bat_vs = [r.get("battery_voltage", 0.0) for r in readings_to_sum]
             avg_bat_v = sum(bat_vs) / len(bat_vs) if bat_vs else 0.0
             
-            grid_vs = [r.get("grid_voltage", 0.0) for r in readings.values()]
+            grid_vs = [r.get("grid_voltage", 0.0) for r in readings_to_sum]
             avg_grid_v = sum(grid_vs) / len(grid_vs) if grid_vs else 0.0
             
-            temps = [r.get("inverter_temp_c", 0.0) for r in readings.values()]
+            temps = [r.get("inverter_temp_c", 0.0) for r in readings_to_sum]
             avg_temp = sum(temps) / len(temps) if temps else 0.0
 
             conn.execute("""
@@ -389,6 +408,10 @@ def query_daily_history(date_str: str, inverter_id: str = "all") -> List[Dict[st
                 load_kw = round(r["load_w"] / 1000.0, 2)
                 grid_kw = round(r["grid_w"] / 1000.0, 2)
                 bat_kw = round(r["battery_w"] / 1000.0, 2)
+
+                # Hide historical outliers from graph
+                if abs(solar_kw) > 100.0 or abs(load_kw) > 100.0 or abs(grid_kw) > 100.0 or abs(bat_kw) > 100.0:
+                    continue
 
                 results.append({
                     "time": time_label,
