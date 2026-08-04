@@ -166,7 +166,7 @@ export default function Battery() {
           
           <div className="metric-card glass-panel">
             <div className="metric-icon" style={{ background: 'rgba(59, 130, 246, 0.1)', color: '#3b82f6' }}>
-              <Activity size={24} />
+              <Activity size={36} />
             </div>
             <div className="metric-info">
               <span className="metric-label">Voltage</span>
@@ -178,7 +178,7 @@ export default function Battery() {
 
           <div className="metric-card glass-panel">
             <div className="metric-icon" style={{ background: 'rgba(239, 68, 68, 0.1)', color: '#ef4444' }}>
-              <Activity size={24} />
+              <Activity size={36} />
             </div>
             <div className="metric-info">
               <span className="metric-label">Current</span>
@@ -190,7 +190,7 @@ export default function Battery() {
 
           <div className="metric-card glass-panel">
             <div className="metric-icon" style={{ background: 'rgba(245, 158, 11, 0.1)', color: '#f59e0b' }}>
-              <Zap size={24} />
+              <Zap size={36} />
             </div>
             <div className="metric-info">
               <span className="metric-label">Power Flow</span>
@@ -202,7 +202,7 @@ export default function Battery() {
 
           <div className="metric-card glass-panel">
             <div className="metric-icon" style={{ background: 'rgba(16, 185, 129, 0.1)', color: '#10b981' }}>
-              <Thermometer size={24} />
+              <Thermometer size={36} />
             </div>
             <div className="metric-info">
               <span className="metric-label">Temperature</span>
@@ -241,7 +241,7 @@ export default function Battery() {
         <div className="analytics-grid">
           <div className="metric-card glass-panel">
             <div className="metric-icon" style={{ background: 'rgba(245, 158, 11, 0.1)', color: '#f59e0b' }}>
-              <BatteryWarning size={24} />
+              <BatteryWarning size={36} />
             </div>
             <div className="metric-info">
               <span className="metric-label">Time on Battery</span>
@@ -253,7 +253,7 @@ export default function Battery() {
 
           <div className="metric-card glass-panel">
             <div className="metric-icon" style={{ background: 'rgba(16, 185, 129, 0.1)', color: '#10b981' }}>
-              <BatteryCharging size={24} />
+              <BatteryCharging size={36} />
             </div>
             <div className="metric-info">
               <span className="metric-label">Total Charge</span>
@@ -265,7 +265,7 @@ export default function Battery() {
 
           <div className="metric-card glass-panel">
             <div className="metric-icon" style={{ background: 'rgba(239, 68, 68, 0.1)', color: '#ef4444' }}>
-              <Zap size={24} />
+              <Zap size={36} />
             </div>
             <div className="metric-info">
               <span className="metric-label">Total Discharge</span>
