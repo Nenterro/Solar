@@ -127,9 +127,17 @@ class HIDInverterReader:
         if not ports:
             return {}
 
+        port_map = {
+            "/dev/ttyUSB0": "inv1",
+            "/dev/ttyUSB1": "inv2",
+            "/dev/ttyUSB2": "inv3",
+            "/dev/ttyUSB3": "inv4"
+        }
+
         readings = {}
         for port in ports:
             try:
+                inv_id = port_map.get(port, f"inv_{port.split('/')[-1]}")
                 # 19200 baud high speed serial communication
                 ser = serial.Serial(port, 19200, timeout=0.3)
                 ser.reset_input_buffer()
@@ -141,23 +149,28 @@ class HIDInverterReader:
                 time.sleep(0.15)
                 resp_b = ser.read(256)
                 if resp_b:
+                    print(f"[{port}] RAW BYTES: {resp_b.hex()}", flush=True)
                     if b'(' in resp_b:
                         resp_str = resp_b.decode('ascii', errors='ignore')
                         idx_paren = resp_str.find('(')
                         if idx_paren != -1:
                             try:
-                                parsed = self.parse_qpigs(resp_str[idx_paren:], "inv1")
-                                readings["inv1"] = parsed
-                                db.update_realtime("inv1", parsed)
-                            except Exception:
-                                pass
+                                parsed = self.parse_qpigs(resp_str[idx_paren:], inv_id)
+                                readings[inv_id] = parsed
+                                db.update_realtime(inv_id, parsed)
+                                print(f"[{port}] Parsed QPIGS successfully for {inv_id}", flush=True)
+                            except Exception as e:
+                                print(f"[{port}] Error parsing QPIGS: {e}", flush=True)
                     elif len(resp_b) >= 4:
-                        try:
-                            parsed = self.parse_modbus_telemetry(resp_b, "inv1")
-                            readings["inv1"] = parsed
-                            db.update_realtime("inv1", parsed)
-                        except Exception:
-                            pass
+                        # Only parse modbus if the payload contains actual data (not just zeroes)
+                        if any(b != 0 for b in resp_b):
+                            try:
+                                parsed = self.parse_modbus_telemetry(resp_b, inv_id)
+                                readings[inv_id] = parsed
+                                db.update_realtime(inv_id, parsed)
+                                print(f"[{port}] Parsed binary successfully for {inv_id}: {parsed.get('ac_output_power_kw')}", flush=True)
+                            except Exception as e:
+                                print(f"[{port}] Error parsing binary telemetry: {e}", flush=True)
 
                 ser.close()
             except Exception as e:
