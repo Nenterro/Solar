@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { motion } from 'framer-motion';
 import { 
   ChevronLeft, 
@@ -10,7 +11,9 @@ import {
   Gauge, 
   ArrowUpRight, 
   ArrowDownLeft,
-  Battery as BatteryIcon
+  Battery as BatteryIcon,
+  Maximize2,
+  Minimize2
 } from 'lucide-react';
 import { 
   ResponsiveContainer, 
@@ -36,6 +39,7 @@ import {
   isSameYear 
 } from 'date-fns';
 import InverterSelector from '../components/InverterSelector';
+import { useTelemetry } from '../context/TelemetryContext';
 import { fetchFromBackend } from '../utils/api';
 import './Graphs.css';
 
@@ -97,6 +101,70 @@ export default function Graphs() {
   const [chartData, setChartData] = useState([]);
   const [dailyScrapedTotals, setDailyScrapedTotals] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const { telemetry } = useTelemetry();
+  const [headerSlot, setHeaderSlot] = useState(null);
+
+  useEffect(() => {
+    setHeaderSlot(document.getElementById('mobile-header-slot'));
+  }, []);
+
+  // Native Fullscreen + Orientation Lock (like YouTube's fullscreen button)
+  const openFullscreen = () => {
+    setIsFullscreen(true);
+
+    // Lock orientation AFTER fullscreen is confirmed active via event
+    const onEntered = () => {
+      if (document.fullscreenElement || document.webkitFullscreenElement) {
+        if (window.screen?.orientation?.lock) {
+          window.screen.orientation.lock('landscape-primary').catch(() => {
+            window.screen.orientation.lock('landscape').catch(() => {});
+          });
+        }
+      }
+      document.removeEventListener('fullscreenchange', onEntered);
+      document.removeEventListener('webkitfullscreenchange', onEntered);
+    };
+    document.addEventListener('fullscreenchange', onEntered);
+    document.addEventListener('webkitfullscreenchange', onEntered);
+
+    const el = document.documentElement;
+    if (el.requestFullscreen) {
+      el.requestFullscreen().catch(() => {});
+    } else if (el.webkitRequestFullscreen) {
+      el.webkitRequestFullscreen();
+    }
+  };
+
+  const closeFullscreen = () => {
+    setIsFullscreen(false);
+    if (document.fullscreenElement) {
+      document.exitFullscreen().catch(() => {});
+    } else if (document.webkitFullscreenElement) {
+      document.webkitExitFullscreen();
+    }
+    if (window.screen?.orientation?.unlock) {
+      window.screen.orientation.unlock();
+    }
+  };
+
+  // Sync state if user exits fullscreen via system gesture (swipe down / back)
+  useEffect(() => {
+    const handleFsChange = () => {
+      if (!document.fullscreenElement && !document.webkitFullscreenElement) {
+        setIsFullscreen(false);
+        if (window.screen?.orientation?.unlock) {
+          window.screen.orientation.unlock();
+        }
+      }
+    };
+    document.addEventListener('fullscreenchange', handleFsChange);
+    document.addEventListener('webkitfullscreenchange', handleFsChange);
+    return () => {
+      document.removeEventListener('fullscreenchange', handleFsChange);
+      document.removeEventListener('webkitfullscreenchange', handleFsChange);
+    };
+  }, []);
 
   // Active inverter selection (persisted across pages)
   const [selectedInverter, setSelectedInverter] = useState(() => {
@@ -116,7 +184,7 @@ export default function Graphs() {
     gridExport: true,
     batteryCharge: true,
     batteryDischarge: true,
-    batteryLevel: false,
+    batteryLevel: true,
   });
 
   const toggleMetric = (id) => {
@@ -165,6 +233,11 @@ export default function Graphs() {
           if (isMounted) {
             setChartData(data.totals || []);
           }
+        } else if (viewMode === 'cumulative') {
+          const data = await fetchFromBackend(`/api/cumulative?date=${dateStr}&inverter=${selectedInverter}&_t=${Date.now()}`);
+          if (isMounted) {
+            setChartData(data.records || []);
+          }
         }
       } catch (err) {
         console.warn('Failed to fetch graph data:', err.message);
@@ -183,36 +256,42 @@ export default function Graphs() {
 
   // Date Navigation Constraints
   const isNextDisabled = useMemo(() => {
-    if (viewMode === 'daily') return isSameDay(selectedDate, today);
+    if (viewMode === 'daily' || viewMode === 'cumulative') return isSameDay(selectedDate, today);
     if (viewMode === 'monthly') return isSameMonth(selectedDate, today);
     if (viewMode === 'yearly') return isSameYear(selectedDate, today);
     return false;
   }, [viewMode, selectedDate, today]);
 
   const handlePrevDate = () => {
-    if (viewMode === 'daily') setSelectedDate(prev => subDays(prev, 1));
+    if (viewMode === 'daily' || viewMode === 'cumulative') setSelectedDate(prev => subDays(prev, 1));
     else if (viewMode === 'monthly') setSelectedDate(prev => subMonths(prev, 1));
     else if (viewMode === 'yearly') setSelectedDate(prev => subYears(prev, 1));
   };
 
   const handleNextDate = () => {
     if (isNextDisabled) return;
-    if (viewMode === 'daily') setSelectedDate(prev => addDays(prev, 1));
+    if (viewMode === 'daily' || viewMode === 'cumulative') setSelectedDate(prev => addDays(prev, 1));
     else if (viewMode === 'monthly') setSelectedDate(prev => addMonths(prev, 1));
     else if (viewMode === 'yearly') setSelectedDate(prev => addYears(prev, 1));
   };
 
   const dateFormattedLabel = useMemo(() => {
-    if (viewMode === 'daily') return format(selectedDate, 'EEEE, MMM d, yyyy');
+    if (viewMode === 'daily' || viewMode === 'cumulative') return format(selectedDate, 'EEEE, MMM d, yyyy');
     if (viewMode === 'monthly') return format(selectedDate, 'MMMM yyyy');
     if (viewMode === 'yearly') return format(selectedDate, 'yyyy');
   }, [viewMode, selectedDate]);
 
   const summaryTotals = useMemo(() => {
-    if (viewMode === 'daily' && dailyScrapedTotals) {
-      return dailyScrapedTotals;
+    // For daily and cumulative views, strictly use scraped totals or end of cumulative array
+    if (viewMode === 'daily' || viewMode === 'cumulative') {
+      if (viewMode === 'cumulative' && Array.isArray(chartData) && chartData.length > 0) {
+        return chartData[chartData.length - 1];
+      }
+      return dailyScrapedTotals || { solar: 0, load: 0, gridImport: 0, gridExport: 0, batteryCharge: 0, batteryDischarge: 0 };
     }
 
+    // For Monthly and Yearly views, chartData already contains the scraped daily/monthly kWh totals,
+    // so we accurately sum those pre-scraped blocks together.
     const totals = { solar: 0, load: 0, gridImport: 0, gridExport: 0, batteryCharge: 0, batteryDischarge: 0 };
     if (!Array.isArray(chartData)) return totals;
     chartData.forEach(item => {
@@ -226,11 +305,62 @@ export default function Graphs() {
     return totals;
   }, [chartData, viewMode, dailyScrapedTotals]);
 
+  // Dynamically compute the maximum value for the Y-Axis based ONLY on active metrics
+  const computedYAxisMax = useMemo(() => {
+    if (!chartData || chartData.length === 0) return 1;
+    let maxVal = 0;
+    chartData.forEach(item => {
+      METRICS_CONFIG.forEach(m => {
+        if (m.id !== 'batteryLevel' && activeMetrics[m.id]) {
+          const val = item[m.id] || 0;
+          if (val > maxVal) maxVal = val;
+        }
+      });
+    });
+    return maxVal <= 0 ? 1 : Number((maxVal * 1.15).toFixed(2));
+  }, [chartData, activeMetrics]);
+
+  const computedBarYAxisMax = useMemo(() => {
+    if (!chartData || chartData.length === 0) return 10;
+    let maxVal = 0;
+    chartData.forEach(item => {
+      METRICS_CONFIG.forEach(m => {
+        if (m.id !== 'batteryLevel' && activeMetrics[m.id]) {
+          const val = item[m.id] || 0;
+          if (val > maxVal) maxVal = val;
+        }
+      });
+    });
+    return maxVal <= 0 ? 10 : Number((maxVal * 1.15).toFixed(2));
+  }, [chartData, activeMetrics]);
+
+  const formatTooltipHeader = (lbl) => {
+    if (!lbl) return '';
+    if (viewMode === 'monthly') {
+      const parts = lbl.split('-');
+      if (parts.length === 3) {
+        const yy = parts[0].slice(-2);
+        return `${parts[2]}/${parts[1]}/${yy}`;
+      }
+    }
+    if (viewMode === 'yearly') {
+      const parts = lbl.split('-');
+      if (parts.length >= 2) {
+        const monthIdx = parseInt(parts[1], 10) - 1;
+        const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+        const mon = months[monthIdx] || parts[1];
+        const yy = parts[0].slice(-2);
+        return `${mon} ${yy}`;
+      }
+    }
+    return lbl;
+  };
+
   const CustomTooltip = ({ active, payload, label }) => {
     if (active && payload && payload.length) {
       return (
         <div className="graphs-tooltip">
-          <p className="tooltip-header">{label}</p>
+          <p className="tooltip-header">{formatTooltipHeader(label)}</p>
           {payload.map((item, idx) => {
             const config = METRICS_CONFIG.find(m => m.id === item.dataKey);
             if (!config) return null;
@@ -238,7 +368,11 @@ export default function Graphs() {
               <div key={idx} className="tooltip-row">
                 <span className="tooltip-dot" style={{ backgroundColor: item.color }} />
                 <span className="tooltip-lbl">{config.label}:</span>
-                <span className="tooltip-val">{item.value} {viewMode === 'daily' ? config.unit : (config.unit === '%' ? '%' : 'kWh')}</span>
+                <span className="tooltip-val">
+                  {item.dataKey === 'batteryLevel' && typeof item.value === 'number' 
+                    ? item.value.toFixed(2) 
+                    : item.value} {viewMode === 'daily' ? config.unit : (config.unit === '%' ? '%' : 'kWh')}
+                </span>
               </div>
             );
           })}
@@ -255,19 +389,33 @@ export default function Graphs() {
       transition={{ duration: 0.4 }}
       className="graphs-page-container"
     >
-      {/* Top Header & Timeframe Selector */}
-      <div className="graphs-header-row">
-        <div>
-          <h2 className="page-title">Analytics & History</h2>
-          <p className="page-subtitle">Real 1-Minute SQLite Power Curves & DESS Scraped Totals</p>
-        </div>
-
-        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
-          {/* Global Inverter Selector */}
+      {/* Mobile Header Portal: Inverter Selector + Connection Dot */}
+      {headerSlot && createPortal(
+        <>
           <InverterSelector 
             selectedInverter={selectedInverter} 
             onChange={handleInverterChange} 
           />
+          <div className={`conn-dot ${telemetry.isBackendOnline ? 'online' : 'offline'}`} />
+        </>,
+        headerSlot
+      )}
+
+      {/* Top Header & Timeframe Selector */}
+      <div className="graphs-header-row">
+        <div className="desktop-only">
+          <h2 className="page-title">Analytics & History</h2>
+          <p className="page-subtitle">Real 1-Minute SQLite Power Curves & DESS Scraped Totals</p>
+        </div>
+
+        <div className="timeframe-wrapper" style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+          {/* Global Inverter Selector (desktop only) */}
+          <div className="desktop-only">
+            <InverterSelector 
+              selectedInverter={selectedInverter} 
+              onChange={handleInverterChange} 
+            />
+          </div>
 
           {/* View Mode Selector (Daily / Monthly / Yearly) */}
           <div className="timeframe-pill-selector">
@@ -276,6 +424,12 @@ export default function Graphs() {
               onClick={() => setViewMode('daily')}
             >
               Daily
+            </button>
+            <button 
+              className={`timeframe-btn ${viewMode === 'cumulative' ? 'active' : ''}`}
+              onClick={() => setViewMode('cumulative')}
+            >
+              Cumulative
             </button>
             <button 
               className={`timeframe-btn ${viewMode === 'monthly' ? 'active' : ''}`}
@@ -333,7 +487,7 @@ export default function Graphs() {
               onClick={() => toggleMetric(metric.id)}
             >
               <Icon size={14} style={{ color: isActive ? metric.color : 'var(--text-secondary)' }} />
-              <span style={{ color: isActive ? '#fff' : 'var(--text-secondary)' }}>{metric.label}</span>
+              <span className="toggle-chip-label" style={{ color: isActive ? '#fff' : 'var(--text-secondary)' }}>{metric.label}</span>
               <div 
                 className="chip-status-dot" 
                 style={{ backgroundColor: isActive ? metric.color : 'rgba(255,255,255,0.2)' }} 
@@ -343,19 +497,193 @@ export default function Graphs() {
         })}
       </div>
 
+      {/* Fullscreen Modal Overlay (Portaled to document.body to cover all navbars) */}
+      {isFullscreen && createPortal(
+        <div className="chart-fullscreen-modal">
+          <div className="fullscreen-modal-header">
+            <div className="modal-title-group">
+              <span className="modal-date-badge">{dateFormattedLabel}</span>
+              <span className="modal-view-badge">{viewMode.toUpperCase()}</span>
+            </div>
+            <button className="fullscreen-close-btn" onClick={closeFullscreen}>
+              <Minimize2 size={18} />
+              <span>Exit</span>
+            </button>
+          </div>
+
+          {/* Metric Toggle Legend inside Fullscreen (Icon-only) */}
+          <div className="metric-toggles-bar modal-toggles">
+            {METRICS_CONFIG.map(metric => {
+              if (metric.id === 'batteryLevel' && viewMode !== 'daily') return null;
+              const isActive = activeMetrics[metric.id];
+              const Icon = metric.icon;
+
+              return (
+                <button
+                  key={metric.id}
+                  className={`metric-toggle-chip ${isActive ? 'active' : 'inactive'}`}
+                  style={{
+                    '--chip-color': metric.color,
+                    borderColor: isActive ? metric.color : 'rgba(255,255,255,0.08)',
+                    background: isActive ? `${metric.color}15` : 'rgba(255,255,255,0.02)',
+                  }}
+                  onClick={() => toggleMetric(metric.id)}
+                >
+                  <Icon size={14} style={{ color: isActive ? metric.color : 'var(--text-secondary)' }} />
+                  <span className="toggle-chip-label">{metric.label}</span>
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="fullscreen-chart-body">
+            {chartData && chartData.length > 0 ? (
+              <ResponsiveContainer width="100%" height="100%">
+                {(viewMode === 'daily' || viewMode === 'cumulative') ? (
+                  <AreaChart 
+                    data={chartData}
+                    margin={{ top: 10, right: 10, left: -20, bottom: 0 }}
+                  >
+                    <defs>
+                      {METRICS_CONFIG.map(m => (
+                        <linearGradient key={m.id} id={`grad-fs-${m.id}`} x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="5%" stopColor={m.color} stopOpacity={0.35}/>
+                          <stop offset="95%" stopColor={m.color} stopOpacity={0}/>
+                        </linearGradient>
+                      ))}
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />
+                    <XAxis 
+                      dataKey="time" 
+                      ticks={computeHourlyTicks(chartData)}
+                      stroke="var(--text-secondary)" 
+                      fontSize={11} 
+                      tickLine={false} 
+                      axisLine={false}
+                      interval="preserveStartEnd"
+                    />
+                    <YAxis 
+                      yAxisId="left"
+                      stroke="var(--text-secondary)" 
+                      fontSize={11} 
+                      tickLine={false} 
+                      axisLine={false} 
+                      domain={[0, computedYAxisMax]}
+                      tickFormatter={(val) => val >= computedYAxisMax ? '' : `${val} ${viewMode === 'cumulative' ? 'kWh' : 'kW'}`}
+                    />
+                    {viewMode === 'daily' && activeMetrics.batteryLevel && (
+                      <YAxis 
+                        yAxisId="right"
+                        orientation="right"
+                        stroke="#10b981" 
+                        fontSize={11} 
+                        tickLine={false} 
+                        axisLine={false} 
+                        unit=" %"
+                        domain={[0, 100]}
+                      />
+                    )}
+                    <Tooltip content={<CustomTooltip />} />
+
+                    {METRICS_CONFIG.map(m => {
+                      if (m.id === 'batteryLevel' && viewMode !== 'daily') return null;
+                      return activeMetrics[m.id] && (
+                        <Area 
+                          key={m.id}
+                          yAxisId={m.unit === '%' ? 'right' : 'left'}
+                          type="monotone" 
+                          dataKey={m.id} 
+                          name={m.label}
+                          stroke={m.color} 
+                          strokeWidth={2} 
+                          fillOpacity={1} 
+                          fill={`url(#grad-fs-${m.id})`}
+                          connectNulls={true}
+                          isAnimationActive={false}
+                        />
+                      );
+                    })}
+                  </AreaChart>
+                ) : (
+                  <BarChart 
+                    data={chartData}
+                    margin={{ top: 10, right: 10, left: -10, bottom: 0 }}
+                  >
+                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />
+                    <XAxis 
+                      dataKey="time" 
+                      stroke="var(--text-secondary)" 
+                      fontSize={11} 
+                      tickLine={false} 
+                      axisLine={false}
+                      tickFormatter={(val) => {
+                        if (!val) return '';
+                        if (viewMode === 'monthly') {
+                          const parts = val.split('-');
+                          return parts.length === 3 ? parts[2] : val;
+                        }
+                        if (viewMode === 'yearly') {
+                          const parts = val.split('-');
+                          if (parts.length >= 2) {
+                            const monthIdx = parseInt(parts[1], 10) - 1;
+                            const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+                            return months[monthIdx] || val;
+                          }
+                        }
+                        return val;
+                      }}
+                    />
+                    <YAxis 
+                      stroke="var(--text-secondary)" 
+                      fontSize={11} 
+                      tickLine={false} 
+                      axisLine={false} 
+                      domain={[0, computedBarYAxisMax]}
+                      tickFormatter={(val) => val >= computedBarYAxisMax ? '' : `${val} kWh`}
+                    />
+                    <Tooltip content={<CustomTooltip />} />
+
+                    {METRICS_CONFIG.map(m => {
+                      if (m.id === 'batteryLevel') return null;
+                      return activeMetrics[m.id] && (
+                        <Bar 
+                          key={m.id}
+                          dataKey={m.id} 
+                          name={m.label}
+                          fill={m.color} 
+                          radius={[4, 4, 0, 0]} 
+                          maxBarSize={16}
+                          isAnimationActive={false}
+                        />
+                      );
+                    })}
+                  </BarChart>
+                )}
+              </ResponsiveContainer>
+            ) : null}
+          </div>
+        </div>,
+        document.body
+      )}
+
       {/* Main Interactive Recharts View */}
       <div className="chart-wrapper-card glass-panel">
         <div className="chart-header-info">
-          <span className="chart-type-badge">
-            {viewMode === 'daily' ? '1-Minute SQLite Power Curve (Line Chart)' : `${viewMode === 'monthly' ? 'Daily Energy Breakdown (Scraped)' : 'Monthly Totals (Scraped)'}`}
-          </span>
+          <button 
+            className="fullscreen-toggle-btn mobile-only"
+            onClick={openFullscreen}
+            title="Expand Fullscreen Chart"
+          >
+            <Maximize2 size={15} />
+            <span className="btn-text">Expand</span>
+          </button>
         </div>
 
         <div className="chart-canvas-container">
           {chartData && chartData.length > 0 ? (
             <ResponsiveContainer width="100%" height="100%">
-              {viewMode === 'daily' ? (
-                /* DAILY VIEW: SLEEK AREA / LINE CHART WITH 1440 UNIFORM MINUTE POINTS & 24 HOURLY TICKS */
+              {(viewMode === 'daily' || viewMode === 'cumulative') ? (
+                /* DAILY & CUMULATIVE VIEWS: SLEEK AREA / LINE CHART WITH 10-MIN OR 1-MIN POINTS */
                 <AreaChart data={chartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
                   <defs>
                     {METRICS_CONFIG.map(m => (
@@ -381,10 +709,10 @@ export default function Graphs() {
                     fontSize={11} 
                     tickLine={false} 
                     axisLine={false} 
-                    unit=" kW"
-                    domain={[0, (dataMax) => (dataMax <= 0 ? 1 : Math.ceil(dataMax * 1.15))]}
+                    domain={[0, computedYAxisMax]}
+                    tickFormatter={(val) => val >= computedYAxisMax ? '' : `${val} ${viewMode === 'cumulative' ? 'kWh' : 'kW'}`}
                   />
-                  {activeMetrics.batteryLevel && (
+                  {viewMode === 'daily' && activeMetrics.batteryLevel && (
                     <YAxis 
                       yAxisId="right"
                       orientation="right"
@@ -398,8 +726,9 @@ export default function Graphs() {
                   )}
                   <Tooltip content={<CustomTooltip />} />
 
-                  {METRICS_CONFIG.map(m => (
-                    activeMetrics[m.id] && (
+                  {METRICS_CONFIG.map(m => {
+                    if (m.id === 'batteryLevel' && viewMode !== 'daily') return null;
+                    return activeMetrics[m.id] && (
                       <Area 
                         key={m.id}
                         yAxisId={m.unit === '%' ? 'right' : 'left'}
@@ -407,27 +736,52 @@ export default function Graphs() {
                         dataKey={m.id} 
                         name={m.label}
                         stroke={m.color} 
-                        strokeWidth={2.5} 
+                        strokeWidth={2} 
                         fillOpacity={1} 
                         fill={`url(#grad-${m.id})`}
                         connectNulls={true}
-                        isAnimationActive={false}
+                        isAnimationActive={true}
+                        animationDuration={600}
+                        animationEasing="ease-out"
+                        animateNewValues={false}
                       />
-                    )
-                  ))}
+                    );
+                  })}
                 </AreaChart>
               ) : (
                 /* MONTHLY & YEARLY VIEWS: BAR CHART */
                 <BarChart data={chartData} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />
-                  <XAxis dataKey="time" stroke="var(--text-secondary)" fontSize={11} tickLine={false} axisLine={false} />
+                  <XAxis 
+                    dataKey="time" 
+                    stroke="var(--text-secondary)" 
+                    fontSize={11} 
+                    tickLine={false} 
+                    axisLine={false}
+                    tickFormatter={(val) => {
+                      if (!val) return '';
+                      if (viewMode === 'monthly') {
+                        const parts = val.split('-');
+                        return parts.length === 3 ? parts[2] : val;
+                      }
+                      if (viewMode === 'yearly') {
+                        const parts = val.split('-');
+                        if (parts.length >= 2) {
+                          const monthIdx = parseInt(parts[1], 10) - 1;
+                          const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+                          return months[monthIdx] || val;
+                        }
+                      }
+                      return val;
+                    }}
+                  />
                   <YAxis 
                     stroke="var(--text-secondary)" 
                     fontSize={11} 
                     tickLine={false} 
                     axisLine={false} 
-                    unit=" kWh"
-                    domain={[0, (dataMax) => (dataMax <= 0 ? 10 : Math.ceil(dataMax * 1.15))]}
+                    domain={[0, computedBarYAxisMax]}
+                    tickFormatter={(val) => val >= computedBarYAxisMax ? '' : `${val} kWh`}
                   />
                   <Tooltip content={<CustomTooltip />} />
 
@@ -441,6 +795,10 @@ export default function Graphs() {
                         fill={m.color} 
                         radius={[4, 4, 0, 0]} 
                         maxBarSize={16}
+                        isAnimationActive={true}
+                        animationDuration={600}
+                        animationEasing="ease-out"
+                        animateNewValues={false}
                       />
                     );
                   })}

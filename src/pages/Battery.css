@@ -5,6 +5,9 @@
   padding: 10px;
   animation: fadeIn 0.4s ease-out;
   min-height: calc(100vh - 40px);
+  max-width: 100%;
+  overflow-x: hidden;
+  box-sizing: border-box;
 }
 
 .battery-header {
@@ -74,6 +77,7 @@
 @media (max-width: 900px) {
   .battery-dashboard {
     grid-template-columns: 1fr;
+    gap: 16px;
   }
 }
 
@@ -140,6 +144,54 @@
   padding-top: 16px;
 }
 
+/* Mobile Horizontal SOC Styles */
+.soc-horizontal-wrapper {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  gap: 12px;
+}
+
+.soc-header-mobile {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+}
+
+.soc-mobile-title {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.soc-mobile-value {
+  font-size: 2.2rem;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.soc-progress-track {
+  width: 100%;
+  height: 24px;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.soc-progress-fill {
+  height: 100%;
+  border-radius: 12px;
+  transition: width 1s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.soc-footer-mobile {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.95rem;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
 .soc-details {
   display: flex;
   flex-direction: column;
@@ -180,12 +232,6 @@
   gap: 24px;
 }
 
-@media (max-width: 600px) {
-  .battery-page .metrics-grid {
-    grid-template-columns: 1fr;
-  }
-}
-
 .battery-page .analytics-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -193,8 +239,23 @@
 }
 
 @media (max-width: 900px) {
+  .battery-page {
+    gap: 16px;
+  }
+  .battery-page .metrics-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+  }
   .battery-page .analytics-grid {
     grid-template-columns: 1fr;
+    gap: 8px;
+  }
+  .soc-widget {
+    padding: 20px;
+  }
+  .battery-history-section {
+    padding: 20px;
+    margin-bottom: 80px;
   }
 }
 
@@ -256,6 +317,48 @@
   font-weight: 600;
   color: var(--text-muted);
   margin-left: 8px;
+}
+
+@media (max-width: 900px) {
+  .battery-page .metric-card {
+    padding: 12px;
+    gap: 8px;
+    border-radius: 12px;
+    flex-direction: column;
+    justify-content: center;
+  }
+  .battery-page .metric-info {
+    align-items: center;
+  }
+  .battery-page .metric-icon {
+    width: 36px;
+    height: 36px;
+    border-radius: 10px;
+  }
+  .battery-page .metric-label {
+    font-size: 0.75rem;
+    margin-bottom: 2px;
+    letter-spacing: 0.5px;
+    text-align: center;
+  }
+  .battery-page .metric-value {
+    font-size: 1.4rem;
+  }
+  .battery-page .unit {
+    font-size: 0.85rem;
+    margin-left: 2px;
+  }
+  
+  /* Make analytics cards compact on mobile */
+  .battery-page .analytics-grid .metric-card {
+    padding: 12px 16px;
+    flex-direction: row;
+    justify-content: space-between;
+  }
+  .battery-page .analytics-grid .metric-icon {
+    width: 36px;
+    height: 36px;
+  }
 }
 
 @keyframes fadeIn {

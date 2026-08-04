@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import { Power, Activity, Zap, Clock, ChevronLeft, ChevronRight, Calendar as CalendarIcon, AlertTriangle } from 'lucide-react';
 import { format, addDays, subDays, isSameDay } from 'date-fns';
 import { useTelemetry } from '../context/TelemetryContext';
@@ -11,8 +12,14 @@ export default function Grid() {
   const today = useMemo(() => new Date(), []);
   const [selectedDate, setSelectedDate] = useState(new Date());
   const [historyData, setHistoryData] = useState([]);
+  const [dailyScrapedTotals, setDailyScrapedTotals] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
   const [hoveredBlock, setHoveredBlock] = useState(null);
+  const [headerSlot, setHeaderSlot] = useState(null);
+
+  useEffect(() => {
+    setHeaderSlot(document.getElementById('mobile-header-slot'));
+  }, []);
 
   // Live metrics from TelemetryContext
   const isOnline = liveData?.gridActive ?? false;
@@ -20,7 +27,7 @@ export default function Grid() {
   const gridFreq = liveData?.gridFrequency ?? 0;
   const gridPower = liveData?.gridPower ?? 0;
 
-  // Fetch history for the timeline
+  // Fetch history and daily totals
   useEffect(() => {
     let isMounted = true;
     setIsLoading(true);
@@ -28,12 +35,24 @@ export default function Grid() {
     const fetchData = async () => {
       const dateStr = format(selectedDate, 'yyyy-MM-dd');
       try {
-        const data = await fetchFromBackend(`/api/history?date=${dateStr}&inverter=all`);
+        const [histRes, totalsRes] = await Promise.all([
+          fetchFromBackend(`/api/history?date=${dateStr}&inverter=all&_t=${Date.now()}`),
+          fetchFromBackend(`/api/dess_totals?month=${dateStr.substring(0, 7)}&inverter=all`)
+        ]);
+        
         if (isMounted) {
-          setHistoryData(data.records || []);
+          setHistoryData(histRes.records || []);
+          
+          let dayObj = null;
+          if (Array.isArray(totalsRes.totals)) {
+            dayObj = totalsRes.totals.find(item => item.time === dateStr);
+          } else if (totalsRes.totals && totalsRes.totals.solar !== undefined) {
+            dayObj = totalsRes.totals;
+          }
+          setDailyScrapedTotals(dayObj);
         }
       } catch (err) {
-        console.error("Failed to fetch grid history", err);
+        console.error("Failed to fetch grid data", err);
       } finally {
         if (isMounted) setIsLoading(false);
       }
@@ -132,9 +151,18 @@ export default function Grid() {
     return `${h}h ${m}m`;
   };
 
+  // Mobile Header Dot Portal
+  const mobileHeaderControls = headerSlot ? createPortal(
+    <div className={`status-badge glass-panel`} style={{ padding: '4px 12px' }}>
+      <div className="status-dot" style={{ backgroundColor: isOnline ? '#10b981' : '#ef4444', boxShadow: `0 0 8px ${isOnline ? '#10b981' : '#ef4444'}` }}></div>
+    </div>,
+    headerSlot
+  ) : null;
+
   return (
     <div className="grid-page">
-      <div className="grid-header glass-panel">
+      {mobileHeaderControls}
+      <div className="grid-header glass-panel desktop-only">
         <div className="title-wrapper">
           <Power size={32} style={{ color: isOnline ? '#10b981' : '#ef4444' }} />
           <div>
@@ -148,13 +176,20 @@ export default function Grid() {
         </div>
       </div>
 
+      {/* Mobile-only status row */}
+      <div className={`mobile-grid-status mobile-only glass-panel ${isOnline ? 'online' : 'offline'}`}>
+        <Power size={20} />
+        <span>{isOnline ? 'Grid — Online' : 'Grid — Load Shedding'}</span>
+        <div className="status-dot"></div>
+      </div>
+
       <div className="grid-dashboard">
         
         {/* Real-time Metrics Grid */}
         <div className="metrics-grid">
           <div className="metric-card glass-panel">
             <div className="metric-icon" style={{ background: 'rgba(59, 130, 246, 0.1)', color: '#3b82f6' }}>
-              <Activity size={24} />
+              <Activity size={40} />
             </div>
             <div className="metric-info">
               <span className="metric-label">Voltage</span>
@@ -166,7 +201,7 @@ export default function Grid() {
 
           <div className="metric-card glass-panel">
             <div className="metric-icon" style={{ background: 'rgba(168, 85, 247, 0.1)', color: '#a855f7' }}>
-              <Activity size={24} />
+              <Activity size={40} />
             </div>
             <div className="metric-info">
               <span className="metric-label">Frequency</span>
@@ -178,7 +213,7 @@ export default function Grid() {
 
           <div className="metric-card glass-panel">
             <div className="metric-icon" style={{ background: 'rgba(239, 68, 68, 0.1)', color: '#ef4444' }}>
-              <Zap size={24} />
+              <Zap size={40} />
             </div>
             <div className="metric-info">
               <span className="metric-label">
@@ -276,10 +311,37 @@ export default function Grid() {
                 </div>
               </div>
 
-              {/* Total Load Shedding Pill */}
-              <div className="shedding-pill">
-                <AlertTriangle size={20} />
-                <span>Total Load Shedding: {formatDuration(totalSheddingMins)}</span>
+              {/* 3 Pills Row */}
+              <div className="timeline-pills-row">
+                <div className="timeline-pill shedding">
+                  <AlertTriangle size={24} />
+                  <div className="pill-info">
+                    <span className="pill-label">Total Load Shedding</span>
+                    <span className="pill-val">{formatDuration(totalSheddingMins)}</span>
+                  </div>
+                </div>
+                
+                <div className="timeline-pills-sub-row">
+                  <div className="timeline-pill import">
+                    <Zap size={24} />
+                    <div className="pill-info">
+                      <span className="pill-label">Total Grid Import</span>
+                      <span className="pill-val">
+                        {dailyScrapedTotals ? (dailyScrapedTotals.gridImport || 0).toFixed(1) : '0.0'} <span className="pill-unit">kWh</span>
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="timeline-pill export">
+                    <Activity size={24} />
+                    <div className="pill-info">
+                      <span className="pill-label">Total Grid Export</span>
+                      <span className="pill-val">
+                        {dailyScrapedTotals ? (dailyScrapedTotals.gridExport || 0).toFixed(1) : '0.0'} <span className="pill-unit">kWh</span>
+                      </span>
+                    </div>
+                  </div>
+                </div>
               </div>
             </>
           )}

@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { Battery as BatteryIcon, Zap, Thermometer, Activity, Calendar as CalendarIcon, ChevronLeft, ChevronRight, BatteryCharging, BatteryWarning } from 'lucide-react';
 import { format, addDays, subDays, isSameDay } from 'date-fns';
 import { fetchFromBackend } from '../utils/api';
@@ -15,24 +16,42 @@ export default function Battery() {
     status: "Connecting..."
   });
   const [historyData, setHistoryData] = useState([]);
+  const [dailyScrapedTotals, setDailyScrapedTotals] = useState(null);
   const [selectedDate, setSelectedDate] = useState(new Date());
+  const [headerSlot, setHeaderSlot] = useState(null);
   const today = new Date();
 
   useEffect(() => {
+    setHeaderSlot(document.getElementById('mobile-header-slot'));
+  }, []);
+
+  useEffect(() => {
     let isMounted = true;
-    const fetchHistory = async () => {
+    const fetchHistoryAndTotals = async () => {
       const dateStr = format(selectedDate, 'yyyy-MM-dd');
       try {
-        const res = await fetchFromBackend(`/api/history?date=${dateStr}&inverter=all`);
-        if (isMounted && res.records) {
-          setHistoryData(res.records);
+        const [histRes, totalsRes] = await Promise.all([
+          fetchFromBackend(`/api/history?date=${dateStr}&inverter=all&_t=${Date.now()}`),
+          fetchFromBackend(`/api/dess_totals?month=${dateStr.substring(0, 7)}&inverter=all`)
+        ]);
+        
+        if (isMounted) {
+          if (histRes.records) setHistoryData(histRes.records);
+          
+          let dayObj = null;
+          if (Array.isArray(totalsRes.totals)) {
+            dayObj = totalsRes.totals.find(item => item.time === dateStr);
+          } else if (totalsRes.totals && totalsRes.totals.solar !== undefined) {
+            dayObj = totalsRes.totals;
+          }
+          setDailyScrapedTotals(dayObj);
         }
       } catch (err) {
-        console.error("Failed to fetch battery history", err);
+        console.error("Failed to fetch battery history or totals", err);
       }
     };
-    fetchHistory();
-    const histInterval = setInterval(fetchHistory, 60000);
+    fetchHistoryAndTotals();
+    const histInterval = setInterval(fetchHistoryAndTotals, 60000);
     return () => {
       isMounted = false;
       clearInterval(histInterval);
@@ -64,21 +83,19 @@ export default function Battery() {
   const dateFormattedLabel = format(selectedDate, 'EEEE, MMM d, yyyy');
 
   // Calculate History Metrics
-  let totalChargeKwh = 0;
-  let totalDischargeKwh = 0;
+  const totalChargeKwh = dailyScrapedTotals ? (dailyScrapedTotals.batteryCharge || 0) : 0;
+  const totalDischargeKwh = dailyScrapedTotals ? (dailyScrapedTotals.batteryDischarge || 0) : 0;
   let timeOnBatteryMins = 0;
 
   historyData.forEach(record => {
-    const batKw = record.bat_kw || record.batteryPowerKw || 0;
-    const isGridActive = record.grid_v > 90.0 || record.gridActive;
+    const solarKw = (record.solar_w || 0) / 1000.0;
+    const gridKw = (record.grid_w || 0) / 1000.0;
+    const batKw = (record.battery_w || 0) / 1000.0;
     
-    if (batKw > 0) {
-      totalChargeKwh += batKw / 60; // kW per minute -> kWh
-    } else if (batKw < 0) {
-      totalDischargeKwh += Math.abs(batKw) / 60;
-    }
-
-    if (!isGridActive) {
+    // Battery net power is negative when discharging. 
+    // The user's definition of "time on battery":
+    // Solar is 0 (<= 0.02 to handle floating noise), Grid Import is 0 (<= 0.02), Battery is discharging (< -0.02)
+    if (solarKw <= 0.02 && gridKw <= 0.02 && batKw < -0.02) {
       timeOnBatteryMins++;
     }
   });
@@ -102,9 +119,20 @@ export default function Battery() {
     return '#ef4444'; // Red
   };
 
+  const isError = data.status.includes('Error');
+
+  // Mobile Header Dot Portal
+  const mobileHeaderControls = headerSlot ? createPortal(
+    <div className={`status-badge glass-panel`} style={{ padding: '4px 12px' }}>
+      <div className="status-dot" style={{ backgroundColor: isError ? '#ef4444' : '#10b981', boxShadow: `0 0 8px ${isError ? '#ef4444' : '#10b981'}` }}></div>
+    </div>,
+    headerSlot
+  ) : null;
+
   return (
     <div className="battery-page">
-      <div className="battery-header glass-panel">
+      {mobileHeaderControls}
+      <div className="battery-header glass-panel desktop-only">
         <div className="title-wrapper">
           <BatteryIcon size={32} style={{ color: getSocColor() }} />
           <div>
@@ -112,7 +140,7 @@ export default function Battery() {
             <p className="subtitle">Direct BMS Telemetry</p>
           </div>
         </div>
-        <div className={`status-badge ${data.status.includes('Error') ? 'error' : 'active'}`}>
+        <div className={`status-badge ${isError ? 'error' : 'active'}`}>
           <div className="status-dot"></div>
           {data.status}
         </div>
@@ -122,9 +150,11 @@ export default function Battery() {
         
         {/* SOC Circular Widget */}
         <div className="soc-widget glass-panel">
-          <h2 className="widget-title">State of Charge</h2>
+          <h2 className="widget-title desktop-only">State of Charge</h2>
           <div className="soc-content">
-            <div className="progress-ring-container">
+            
+            {/* Desktop Circular Ring */}
+            <div className="progress-ring-container desktop-only">
               <svg
                 className="progress-ring"
                 width="240"
@@ -156,7 +186,25 @@ export default function Battery() {
               </div>
             </div>
 
-            <div className="soc-details">
+            {/* Mobile Horizontal Pill */}
+            <div className="mobile-only soc-horizontal-wrapper">
+              <div className="soc-header-mobile">
+                <span className="soc-mobile-title">State of Charge</span>
+                <span className="soc-mobile-value" style={{ color: getSocColor() }}>{data.soc}%</span>
+              </div>
+              <div className="soc-progress-track">
+                <div 
+                  className="soc-progress-fill" 
+                  style={{ width: `${data.soc}%`, backgroundColor: getSocColor() }}
+                ></div>
+              </div>
+              <div className="soc-footer-mobile">
+                <span>{data.state}</span>
+                <span>{((data.soc / 100) * 10.24).toFixed(2)} kWh Avail</span>
+              </div>
+            </div>
+
+            <div className="soc-details desktop-only">
               <div className="detail-item">
                 <span className="detail-label">Status</span>
                 <span className="detail-value" style={{ color: getSocColor() }}>
