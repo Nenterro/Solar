@@ -156,6 +156,7 @@ export default function Battery() {
             <div className="soc-text-container">
               <span className="soc-value">{data.soc}%</span>
               <span className="soc-label">{data.state}</span>
+              <span className="soc-units">{((data.soc / 100) * 5.12).toFixed(2)} kWh</span>
             </div>
           </div>
         </div>
@@ -237,19 +238,7 @@ export default function Battery() {
           </div>
         </div>
 
-        <div className="metrics-grid">
-          <div className="metric-card glass-panel">
-            <div className="metric-icon" style={{ background: 'rgba(59, 130, 246, 0.1)', color: '#3b82f6' }}>
-              <BatteryIcon size={24} />
-            </div>
-            <div className="metric-info">
-              <span className="metric-label">Remaining Capacity</span>
-              <div className="metric-value">
-                {((data.soc / 100) * 5.12).toFixed(2)} <span className="unit">kWh</span>
-              </div>
-            </div>
-          </div>
-
+        <div className="analytics-grid">
           <div className="metric-card glass-panel">
             <div className="metric-icon" style={{ background: 'rgba(245, 158, 11, 0.1)', color: '#f59e0b' }}>
               <BatteryWarning size={24} />
