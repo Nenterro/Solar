@@ -156,7 +156,7 @@ export default function Battery() {
             <div className="soc-text-container">
               <span className="soc-value">{data.soc}%</span>
               <span className="soc-label">{data.state}</span>
-              <span className="soc-units">{((data.soc / 100) * 5.12).toFixed(2)} kWh</span>
+              <span className="soc-units">{((data.soc / 100) * 10.24).toFixed(2)} kWh</span>
             </div>
           </div>
         </div>
