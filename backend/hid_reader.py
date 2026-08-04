@@ -99,14 +99,12 @@ class HIDInverterReader:
         grid_v = round(regs[0] / 10.0, 1) if regs[0] > 1000 else (223.5 if regs[0] < 90 else round(regs[0] / 10.0, 1))
         grid_f = round(regs[1] / 2.0, 1) if regs[1] > 100 else float(regs[1])
 
-        # Reg 2 is load in 1 kW increments (1 = 1.0 kW)
-        load_kw = round(float(regs[2]), 2) if regs[2] < 50 else round(float(regs[2]) / 10.0, 2)
-        if load_kw > 20.0:
-            load_kw = 1.0
+        # Extract real measured power values (W/kW) without artificial overrides
+        load_val = float(regs[2]) if regs[2] < 20000 else 0.0
+        load_kw = round(load_val / 1000.0, 2) if load_val > 50 else round(load_val, 2)
 
-        solar_kw = round(float(regs[4]) / 10.0, 2) if len(regs) >= 5 else 0.0
-        if solar_kw > 20.0:
-            solar_kw = 0.0
+        solar_val = float(regs[4]) if len(regs) >= 5 and regs[4] < 20000 else 0.0
+        solar_kw = round(solar_val / 1000.0, 2) if solar_val > 50 else round(solar_val, 2)
 
         return {
             "inverter_id": inv_id,
@@ -118,7 +116,7 @@ class HIDInverterReader:
             "ac_output_voltage": 230.0,
             "ac_output_frequency": 50.0,
             "ac_output_power_kw": load_kw,
-            "load_percentage": round((load_kw / 5.0) * 100.0, 1),
+            "load_percentage": round((load_kw / 5.0) * 100.0, 1) if load_kw > 0 else 0.0,
             "solar_power_kw": solar_kw,
             "pv_voltage": 0.0,
             "pv_current": 0.0,
@@ -196,13 +194,8 @@ class HIDInverterReader:
                         elif len(resp_b) >= 5 and resp_b[0] in (1, 2, 3) and resp_b[1] in (3, 4):
                             try:
                                 parsed = self.parse_modbus_telemetry(resp_b, "inv1")
-                                # Share single master COM cable reading across all 3 inverters
-                                for cfg in INVERTERS_CONFIG:
-                                    inv_k = cfg["id"]
-                                    p_copy = parsed.copy()
-                                    p_copy["inverter_id"] = inv_k
-                                    readings[inv_k] = p_copy
-                                    db.update_realtime(inv_k, p_copy)
+                                readings["inv1"] = parsed
+                                db.update_realtime("inv1", parsed)
                             except Exception:
                                 pass
 
