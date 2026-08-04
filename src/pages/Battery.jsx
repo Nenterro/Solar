@@ -91,7 +91,7 @@ export default function Battery() {
   };
 
   // Calculate circular progress dash array
-  const radius = 120;
+  const radius = 100;
   const circumference = 2 * Math.PI * radius;
   const strokeDashoffset = circumference - (data.soc / 100) * circumference;
   
@@ -123,37 +123,55 @@ export default function Battery() {
         {/* SOC Circular Widget */}
         <div className="soc-widget glass-panel">
           <h2 className="widget-title">State of Charge</h2>
-          <div className="progress-ring-container">
-            <svg
-              className="progress-ring"
-              width="300"
-              height="300"
-            >
-              <circle
-                className="progress-ring__circle-bg"
-                strokeWidth="20"
-                fill="transparent"
-                r={radius}
-                cx="150"
-                cy="150"
-              />
-              <circle
-                className="progress-ring__circle"
-                strokeWidth="20"
-                strokeDasharray={circumference}
-                strokeDashoffset={strokeDashoffset}
-                strokeLinecap="round"
-                stroke={getSocColor()}
-                fill="transparent"
-                r={radius}
-                cx="150"
-                cy="150"
-              />
-            </svg>
-            <div className="soc-text-container">
-              <span className="soc-value">{data.soc}%</span>
-              <span className="soc-label">{data.state}</span>
-              <span className="soc-units">{((data.soc / 100) * 10.24).toFixed(2)} kWh</span>
+          <div className="soc-content">
+            <div className="progress-ring-container">
+              <svg
+                className="progress-ring"
+                width="240"
+                height="240"
+              >
+                <circle
+                  className="progress-ring__circle-bg"
+                  strokeWidth="16"
+                  fill="transparent"
+                  r={radius}
+                  cx="120"
+                  cy="120"
+                />
+                <circle
+                  className="progress-ring__circle"
+                  strokeWidth="16"
+                  strokeDasharray={circumference}
+                  strokeDashoffset={strokeDashoffset}
+                  strokeLinecap="round"
+                  stroke={getSocColor()}
+                  fill="transparent"
+                  r={radius}
+                  cx="120"
+                  cy="120"
+                />
+              </svg>
+              <div className="soc-text-container">
+                <span className="soc-value">{data.soc}%</span>
+              </div>
+            </div>
+
+            <div className="soc-details">
+              <div className="detail-item">
+                <span className="detail-label">Status</span>
+                <span className="detail-value" style={{ color: getSocColor() }}>
+                  {data.state}
+                </span>
+              </div>
+              <div className="detail-item">
+                <span className="detail-label">Available Energy</span>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px' }}>
+                  <span className="detail-value">
+                    {((data.soc / 100) * 10.24).toFixed(2)}
+                  </span>
+                  <span className="detail-unit">kWh</span>
+                </div>
+              </div>
             </div>
           </div>
         </div>
