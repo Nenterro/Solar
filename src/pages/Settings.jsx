@@ -24,7 +24,7 @@ const DEFAULT_CANDIDATES = [
   'http://192.168.18.49:8000',
   'http://localhost:8000',
   'http://100.97.146.42:8000',
-  'https://huz-solar.duckdns.org'
+  'https://huz-solar.duckdns.org:8888'
 ];
 
 export default function Settings() {
