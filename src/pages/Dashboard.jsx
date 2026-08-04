@@ -11,7 +11,7 @@ export const CANDIDATE_BACKEND_URLS = [
   import.meta.env.VITE_BACKEND_URL,
   'http://localhost:8000',
   'http://100.97.146.42:8000',
-  'https://huz-solar.duckdns.org'
+  'https://huz-solar.duckdns.org:8888'
 ].filter(Boolean);
 
 export default function Dashboard() {
