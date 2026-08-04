@@ -198,9 +198,9 @@
 }
 
 .metric-icon {
-  width: 180px;
-  height: 180px;
-  border-radius: 40px;
+  width: 300px;
+  height: 300px;
+  border-radius: 64px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -213,26 +213,26 @@
 }
 
 .metric-label {
-  font-size: 2.2rem;
+  font-size: 4rem;
   color: var(--text-muted);
-  margin-bottom: 12px;
+  margin-bottom: 24px;
   font-weight: 500;
   text-transform: uppercase;
   letter-spacing: 4px;
 }
 
 .metric-value {
-  font-size: 6rem;
+  font-size: 25rem;
   font-weight: 800;
   color: var(--text-color);
   line-height: 1;
 }
 
 .unit {
-  font-size: 3rem;
+  font-size: 8rem;
   font-weight: 600;
   color: var(--text-muted);
-  margin-left: 12px;
+  margin-left: 24px;
 }
 
 @keyframes fadeIn {
