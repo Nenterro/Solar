@@ -5,11 +5,13 @@ import logging
 from typing import Dict, Any, List, Optional
 import db
 
-# Set up logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
+try:
+    import serial
+except ImportError:
+    serial = None
+
 logger = logging.getLogger("HID_READER")
 
-# Direct Hardware Mappings verified via Linux sysfs
 HARDCODED_NODES = {
     "inv1": "/dev/hidraw0",
     "inv2": "/dev/hidraw1",
@@ -40,14 +42,9 @@ class HIDInverterReader:
         self.use_mock = False
         self.readings_cache: Dict[str, Dict[str, Any]] = {}
         self.last_db_log_time = 0
-
-        # Initialize SQLite DB
         db.init_db()
 
     def send_cmd_to_node(self, node_path: str, cmd: str) -> Optional[str]:
-        """
-        Send raw Voltronic command via direct Linux OS file descriptor I/O.
-        """
         try:
             fd = os.open(node_path, os.O_RDWR | os.O_NONBLOCK)
             crc = crc16_voltronic(cmd)
@@ -73,18 +70,70 @@ class HIDInverterReader:
                     time.sleep(0.04)
 
             os.close(fd)
-
             if response_bytes:
                 return response_bytes.split(b'\r')[0].decode('ascii', errors='ignore')
             return None
-        except Exception as e:
+        except Exception:
             return None
 
-    def scan_and_map_devices(self) -> bool:
-        # Keep direct hardware mappings active
-        self.device_map = HARDCODED_NODES.copy()
-        self.is_connected = True
-        return True
+    def poll_serial_ports(self) -> Dict[str, Dict[str, Any]]:
+        """Poll active RS232 / USB-Serial ports (/dev/ttyUSB*) for inverter telemetry."""
+        if not serial:
+            return {}
+
+        ports = sorted(glob.glob("/dev/ttyUSB*") + glob.glob("/dev/ttyACM*"))
+        if not ports:
+            return {}
+
+        readings = {}
+        for port in ports:
+            try:
+                ser = serial.Serial(port, 2400, timeout=1.0)
+                ser.reset_input_buffer()
+                ser.reset_output_buffer()
+
+                # Try parallel query QPGS0, QPGS1, QPGS2
+                for idx, cfg in enumerate(INVERTERS_CONFIG):
+                    inv_id = cfg["id"]
+                    cmd = f"QPGS{idx}"
+                    crc = crc16_voltronic(cmd)
+                    ser.write(cmd.encode('ascii') + crc + b'\r')
+                    time.sleep(0.15)
+                    resp_b = ser.read(256)
+                    if resp_b and b'(' in resp_b:
+                        resp_str = resp_b.decode('ascii', errors='ignore')
+                        idx_paren = resp_str.find('(')
+                        if idx_paren != -1:
+                            try:
+                                parsed = self.parse_qpigs(resp_str[idx_paren:], inv_id)
+                                readings[inv_id] = parsed
+                                db.update_realtime(inv_id, parsed)
+                            except Exception:
+                                pass
+
+                # Fallback to single QPIGS if parallel query returns empty
+                if not readings:
+                    cmd = "QPIGS"
+                    crc = crc16_voltronic(cmd)
+                    ser.write(cmd.encode('ascii') + crc + b'\r')
+                    time.sleep(0.15)
+                    resp_b = ser.read(256)
+                    if resp_b and b'(' in resp_b:
+                        resp_str = resp_b.decode('ascii', errors='ignore')
+                        idx_paren = resp_str.find('(')
+                        if idx_paren != -1:
+                            try:
+                                parsed = self.parse_qpigs(resp_str[idx_paren:], "inv1")
+                                readings["inv1"] = parsed
+                                db.update_realtime("inv1", parsed)
+                            except Exception:
+                                pass
+
+                ser.close()
+            except Exception as e:
+                logger.debug(f"Serial port poll exception on {port}: {e}")
+
+        return readings
 
     def parse_qpigs(self, qpigs_str: str, inv_id: str) -> Dict[str, Any]:
         if not qpigs_str or not qpigs_str.startswith('('):
@@ -141,109 +190,63 @@ class HIDInverterReader:
         }
 
     def poll_all_inverters(self) -> Dict[str, Dict[str, Any]]:
-        """
-        Poll QPIGS telemetry directly from /dev/hidraw0, /dev/hidraw1, /dev/hidraw2.
-        """
         successful_reads = 0
 
+        # 1. Try HID nodes first if present
         for cfg in INVERTERS_CONFIG:
             inv_id = cfg["id"]
             node_path = self.device_map.get(inv_id)
 
             if node_path and os.path.exists(node_path):
-                # Try up to 3 times per inverter to handle USB HID corruption/timeouts
-                success = False
-                for attempt in range(3):
+                for attempt in range(2):
                     qpigs_resp = self.send_cmd_to_node(node_path, "QPIGS")
                     if qpigs_resp:
                         try:
                             data = self.parse_qpigs(qpigs_resp, inv_id)
-                            
-                            # Hardware sanity check: Reject physically impossible artifacts
-                            if data["ac_output_power_kw"] > 25.0 or data["solar_power_kw"] > 25.0:
-                                raise ValueError("Parsed power values exceed realistic limits (Hardware glitch)")
-                                
-                            self.readings_cache[inv_id] = data
-                            db.update_realtime(inv_id, data)
-                            successful_reads += 1
-                            success = True
-                            break  # Success, exit retry loop
-                        except Exception as e:
-                            logger.warning(f"QPIGS parse error for {inv_id} at {node_path} (Attempt {attempt+1}/3): {e}")
-                            time.sleep(0.3)
+                            if data["ac_output_power_kw"] <= 25.0 and data["solar_power_kw"] <= 25.0:
+                                self.readings_cache[inv_id] = data
+                                db.update_realtime(inv_id, data)
+                                successful_reads += 1
+                                break
+                        except Exception:
+                            time.sleep(0.2)
                     else:
-                        time.sleep(0.3)
-                
-                if success:
-                    continue
+                        time.sleep(0.2)
 
-            # Fallback zeroed state if node unreadable
-            self.readings_cache[inv_id] = {
-              "inverter_id": inv_id,
-              "label": cfg["label"],
-              "timestamp": int(time.time()),
-              "connected": False,
-              "is_simulated": True,
-              "solar_power_kw": 0.0,
-              "ac_output_power_kw": 0.0,
-              "grid_power_kw": 0.0,
-              "battery_power_kw": 0.0,
-              "battery_capacity_pct": 71.0,
-              "battery_voltage": 53.3,
-              "grid_voltage": 223.5,
-              "grid_frequency": 50.0,
-              "grid_active": True,
-              "inverter_temp_c": 50.0,
-              "load_percentage": 0.0
-            }
+        # 2. Try Serial ports (/dev/ttyUSB*) if HID reads were unsuccessful
+        if successful_reads < len(INVERTERS_CONFIG):
+            serial_readings = self.poll_serial_ports()
+            for inv_id, data in serial_readings.items():
+                self.readings_cache[inv_id] = data
+                successful_reads += 1
+
+        # 3. Fallback state for any unreadable inverter
+        for cfg in INVERTERS_CONFIG:
+            inv_id = cfg["id"]
+            if inv_id not in self.readings_cache:
+                self.readings_cache[inv_id] = {
+                  "inverter_id": inv_id,
+                  "label": cfg["label"],
+                  "timestamp": int(time.time()),
+                  "connected": False,
+                  "is_simulated": True,
+                  "solar_power_kw": 0.0,
+                  "ac_output_power_kw": 0.0,
+                  "grid_power_kw": 0.0,
+                  "battery_power_kw": 0.0,
+                  "battery_capacity_pct": 71.0,
+                  "battery_voltage": 53.3,
+                  "grid_voltage": 223.5,
+                  "grid_frequency": 50.0,
+                  "grid_active": True,
+                  "inverter_temp_c": 50.0,
+                  "load_percentage": 0.0
+                }
 
         self.is_connected = successful_reads > 0
         return self.readings_cache
 
-    def get_telemetry_for_selection(self, selected_inverter: str = "all") -> Dict[str, Any]:
-        all_readings = self.poll_all_inverters()
+    def get_readings(self) -> Dict[str, Dict[str, Any]]:
+        return self.poll_all_inverters()
 
-        if selected_inverter in all_readings:
-            return all_readings[selected_inverter]
-
-        # Calculate aggregate system total for 'all'
-        readings_list = list(all_readings.values())
-        total_solar = round(sum(r.get("solar_power_kw", 0.0) for r in readings_list), 2)
-        total_load = round(sum(r.get("ac_output_power_kw", 0.0) for r in readings_list), 2)
-        total_battery = round(sum(r.get("battery_power_kw", 0.0) for r in readings_list), 2)
-        total_grid = round(sum(r.get("grid_power_kw", 0.0) for r in readings_list), 2)
-        
-        valid_soc = [r.get("battery_capacity_pct", 71) for r in readings_list if r.get("battery_capacity_pct")]
-        avg_soc = round(sum(valid_soc) / len(valid_soc), 2) if valid_soc else 71
-
-        grid_voltages = [r.get("grid_voltage", 0) for r in readings_list if r.get("grid_voltage", 0) > 0]
-        avg_grid_v = round(sum(grid_voltages) / len(grid_voltages), 1) if grid_voltages else 0.0
-
-        grid_freqs = [r.get("grid_frequency", 0) for r in readings_list if r.get("grid_frequency", 0) > 0]
-        avg_grid_f = round(sum(grid_freqs) / len(grid_freqs), 1) if grid_freqs else 0.0
-
-        temps = [r.get("inverter_temp_c", 0) for r in readings_list if r.get("inverter_temp_c", 0) > 0]
-        avg_temp = round(sum(temps) / len(temps), 1) if temps else 0.0
-
-        is_grid_active = any(r.get("grid_active", False) for r in readings_list)
-
-        agg_data = {
-          "inverter_id": "all",
-          "label": "All Inverters",
-          "timestamp": int(time.time()),
-          "connected": self.is_connected,
-          "is_simulated": not self.is_connected,
-          "solar_power_kw": total_solar,
-          "ac_output_power_kw": total_load,
-          "grid_power_kw": total_grid,
-          "battery_power_kw": total_battery,
-          "battery_capacity_pct": avg_soc,
-          "battery_voltage": 53.3,
-          "grid_voltage": avg_grid_v,
-          "grid_frequency": avg_grid_f,
-          "grid_active": is_grid_active,
-          "inverter_temp_c": avg_temp,
-          "load_percentage": round((total_load / 15.0) * 100, 1)
-        }
-        db.update_realtime("all", agg_data)
-        return agg_data
+hid_reader = HIDInverterReader()
