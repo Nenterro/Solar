@@ -162,50 +162,50 @@ export default function Battery() {
         <div className="metrics-grid">
           
           <div className="metric-card glass-panel">
+            <div className="metric-icon" style={{ background: 'rgba(59, 130, 246, 0.1)', color: '#3b82f6' }}>
+              <Activity size={120} />
+            </div>
             <div className="metric-info">
               <span className="metric-label">Voltage</span>
               <div className="metric-value">
                 {data.voltage.toFixed(1)} <span className="unit">V</span>
               </div>
             </div>
-            <div className="metric-icon" style={{ background: 'rgba(59, 130, 246, 0.1)', color: '#3b82f6' }}>
-              <Activity size={48} />
-            </div>
           </div>
 
           <div className="metric-card glass-panel">
+            <div className="metric-icon" style={{ background: 'rgba(239, 68, 68, 0.1)', color: '#ef4444' }}>
+              <Activity size={120} />
+            </div>
             <div className="metric-info">
               <span className="metric-label">Current</span>
               <div className="metric-value">
                 {data.current.toFixed(1)} <span className="unit">A</span>
               </div>
             </div>
-            <div className="metric-icon" style={{ background: 'rgba(239, 68, 68, 0.1)', color: '#ef4444' }}>
-              <Activity size={48} />
-            </div>
           </div>
 
           <div className="metric-card glass-panel">
+            <div className="metric-icon" style={{ background: 'rgba(245, 158, 11, 0.1)', color: '#f59e0b' }}>
+              <Zap size={120} />
+            </div>
             <div className="metric-info">
               <span className="metric-label">Power Flow</span>
               <div className="metric-value">
                 {data.power.toFixed(0)} <span className="unit">W</span>
               </div>
             </div>
-            <div className="metric-icon" style={{ background: 'rgba(245, 158, 11, 0.1)', color: '#f59e0b' }}>
-              <Zap size={48} />
-            </div>
           </div>
 
           <div className="metric-card glass-panel">
+            <div className="metric-icon" style={{ background: 'rgba(16, 185, 129, 0.1)', color: '#10b981' }}>
+              <Thermometer size={120} />
+            </div>
             <div className="metric-info">
               <span className="metric-label">Temperature</span>
               <div className="metric-value">
                 {data.temperature.toFixed(1)} <span className="unit">°C</span>
               </div>
-            </div>
-            <div className="metric-icon" style={{ background: 'rgba(16, 185, 129, 0.1)', color: '#10b981' }}>
-              <Thermometer size={48} />
             </div>
           </div>
 
@@ -237,38 +237,38 @@ export default function Battery() {
 
         <div className="analytics-grid">
           <div className="metric-card glass-panel">
+            <div className="metric-icon" style={{ background: 'rgba(245, 158, 11, 0.1)', color: '#f59e0b' }}>
+              <BatteryWarning size={120} />
+            </div>
             <div className="metric-info">
               <span className="metric-label">Time on Battery</span>
               <div className="metric-value">
                 {formatDuration(timeOnBatteryMins)}
               </div>
             </div>
-            <div className="metric-icon" style={{ background: 'rgba(245, 158, 11, 0.1)', color: '#f59e0b' }}>
-              <BatteryWarning size={48} />
-            </div>
           </div>
 
           <div className="metric-card glass-panel">
+            <div className="metric-icon" style={{ background: 'rgba(16, 185, 129, 0.1)', color: '#10b981' }}>
+              <BatteryCharging size={120} />
+            </div>
             <div className="metric-info">
               <span className="metric-label">Total Charge</span>
               <div className="metric-value">
                 {totalChargeKwh.toFixed(2)} <span className="unit">kWh</span>
               </div>
             </div>
-            <div className="metric-icon" style={{ background: 'rgba(16, 185, 129, 0.1)', color: '#10b981' }}>
-              <BatteryCharging size={48} />
-            </div>
           </div>
 
           <div className="metric-card glass-panel">
+            <div className="metric-icon" style={{ background: 'rgba(239, 68, 68, 0.1)', color: '#ef4444' }}>
+              <Zap size={120} />
+            </div>
             <div className="metric-info">
               <span className="metric-label">Total Discharge</span>
               <div className="metric-value">
                 {totalDischargeKwh.toFixed(2)} <span className="unit">kWh</span>
               </div>
-            </div>
-            <div className="metric-icon" style={{ background: 'rgba(239, 68, 68, 0.1)', color: '#ef4444' }}>
-              <Zap size={48} />
             </div>
           </div>
         </div>
