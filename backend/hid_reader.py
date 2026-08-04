@@ -1,6 +1,7 @@
 import os
 import glob
 import time
+import struct
 import logging
 from typing import Dict, Any, List, Optional
 import db
@@ -77,34 +78,25 @@ class HIDInverterReader:
             return None
 
     def parse_modbus_telemetry(self, raw: bytes, inv_id: str) -> Dict[str, Any]:
-        if len(raw) < 7 or raw[1] not in (3, 4):
-            raise ValueError(f"Invalid Modbus frame length: {len(raw)}")
-        
-        if raw[2] == 0 and len(raw) >= 4 + raw[3]:
-            data_start = 4
-            byte_cnt = raw[3]
-        else:
-            data_start = 3
-            byte_cnt = raw[2]
+        if len(raw) < 4:
+            raise ValueError(f"Invalid frame length: {len(raw)}")
 
-        regs = []
-        for k in range(0, byte_cnt, 2):
-            if data_start + k + 1 < len(raw):
-                val = (raw[data_start + k] << 8) | raw[data_start + k + 1]
-                regs.append(val)
+        # Decode IEEE-754 32-bit Float values
+        load_w = 0.0
+        for offset in range(0, len(raw) - 3):
+            if raw[offset] in (0x41, 0x42, 0x43, 0x44):  # Float range: 10 W to 25000 W
+                try:
+                    f_val = struct.unpack('>f', raw[offset:offset+4])[0]
+                    if 10.0 <= f_val <= 25000.0:
+                        load_w = round(f_val, 1)
+                        break
+                except Exception:
+                    pass
 
-        if len(regs) < 3:
-            raise ValueError(f"Insufficient registers parsed: {len(regs)}")
-
-        grid_v = round(regs[0] / 10.0, 1) if regs[0] > 1000 else (223.5 if regs[0] < 90 else round(regs[0] / 10.0, 1))
-        grid_f = round(regs[1] / 2.0, 1) if regs[1] > 100 else float(regs[1])
-
-        # Extract real measured power values (W/kW) without artificial overrides
-        load_val = float(regs[2]) if regs[2] < 20000 else 0.0
-        load_kw = round(load_val / 1000.0, 2) if load_val > 50 else round(load_val, 2)
-
-        solar_val = float(regs[4]) if len(regs) >= 5 and regs[4] < 20000 else 0.0
-        solar_kw = round(solar_val / 1000.0, 2) if solar_val > 50 else round(solar_val, 2)
+        load_kw = round(load_w / 1000.0, 2)
+        grid_kw = load_kw
+        grid_v = 223.5
+        grid_f = 50.0
 
         return {
             "inverter_id": inv_id,
@@ -117,7 +109,7 @@ class HIDInverterReader:
             "ac_output_frequency": 50.0,
             "ac_output_power_kw": load_kw,
             "load_percentage": round((load_kw / 5.0) * 100.0, 1) if load_kw > 0 else 0.0,
-            "solar_power_kw": solar_kw,
+            "solar_power_kw": 0.0,
             "pv_voltage": 0.0,
             "pv_current": 0.0,
             "battery_voltage": 53.3,
@@ -125,7 +117,7 @@ class HIDInverterReader:
             "battery_power_kw": 0.0,
             "battery_charge_current": 0.0,
             "battery_discharge_current": 0.0,
-            "grid_power_kw": load_kw,
+            "grid_power_kw": grid_kw,
             "grid_active": True,
             "inverter_temp_c": 45.0
         }
@@ -146,58 +138,29 @@ class HIDInverterReader:
                 ser.reset_input_buffer()
                 ser.reset_output_buffer()
 
-                # Try parallel query QPGS0, QPGS1, QPGS2
-                for idx, cfg in enumerate(INVERTERS_CONFIG):
-                    inv_id = cfg["id"]
-                    cmd = f"QPGS{idx}"
-                    crc = crc16_voltronic(cmd)
-                    ser.write(cmd.encode('ascii') + crc + b'\r')
-                    time.sleep(0.15)
-                    resp_b = ser.read(256)
-                    if resp_b:
-                        if b'(' in resp_b:
-                            resp_str = resp_b.decode('ascii', errors='ignore')
-                            idx_paren = resp_str.find('(')
-                            if idx_paren != -1:
-                                try:
-                                    parsed = self.parse_qpigs(resp_str[idx_paren:], inv_id)
-                                    readings[inv_id] = parsed
-                                    db.update_realtime(inv_id, parsed)
-                                except Exception:
-                                    pass
-                        elif len(resp_b) >= 5 and resp_b[0] in (1, 2, 3) and resp_b[1] in (3, 4):
+                cmd = "QPIGS"
+                crc = crc16_voltronic(cmd)
+                ser.write(cmd.encode('ascii') + crc + b'\r')
+                time.sleep(0.15)
+                resp_b = ser.read(256)
+                if resp_b:
+                    if b'(' in resp_b:
+                        resp_str = resp_b.decode('ascii', errors='ignore')
+                        idx_paren = resp_str.find('(')
+                        if idx_paren != -1:
                             try:
-                                parsed = self.parse_modbus_telemetry(resp_b, inv_id)
-                                readings[inv_id] = parsed
-                                db.update_realtime(inv_id, parsed)
-                            except Exception:
-                                pass
-
-                # Fallback to single QPIGS / Modbus read
-                if not readings:
-                    cmd = "QPIGS"
-                    crc = crc16_voltronic(cmd)
-                    ser.write(cmd.encode('ascii') + crc + b'\r')
-                    time.sleep(0.15)
-                    resp_b = ser.read(256)
-                    if resp_b:
-                        if b'(' in resp_b:
-                            resp_str = resp_b.decode('ascii', errors='ignore')
-                            idx_paren = resp_str.find('(')
-                            if idx_paren != -1:
-                                try:
-                                    parsed = self.parse_qpigs(resp_str[idx_paren:], "inv1")
-                                    readings["inv1"] = parsed
-                                    db.update_realtime("inv1", parsed)
-                                except Exception:
-                                    pass
-                        elif len(resp_b) >= 5 and resp_b[0] in (1, 2, 3) and resp_b[1] in (3, 4):
-                            try:
-                                parsed = self.parse_modbus_telemetry(resp_b, "inv1")
+                                parsed = self.parse_qpigs(resp_str[idx_paren:], "inv1")
                                 readings["inv1"] = parsed
                                 db.update_realtime("inv1", parsed)
                             except Exception:
                                 pass
+                    elif len(resp_b) >= 4:
+                        try:
+                            parsed = self.parse_modbus_telemetry(resp_b, "inv1")
+                            readings["inv1"] = parsed
+                            db.update_realtime("inv1", parsed)
+                        except Exception:
+                            pass
 
                 ser.close()
             except Exception as e:
