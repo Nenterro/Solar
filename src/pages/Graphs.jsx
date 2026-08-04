@@ -132,7 +132,7 @@ export default function Graphs() {
       const dateStr = format(selectedDate, 'yyyy-MM-dd');
       try {
         if (viewMode === 'daily') {
-          const data = await fetchFromBackend(`/api/history?date=${dateStr}&inverter=${selectedInverter}`);
+          const data = await fetchFromBackend(`/api/history?date=${dateStr}&inverter=${selectedInverter}&_t=${Date.now()}`);
           if (isMounted) {
             const formatted = processDaily24hRecords(data.records);
             setChartData(formatted);
