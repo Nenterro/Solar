@@ -56,7 +56,7 @@ def background_telemetry_loop():
 
         except Exception as e:
             logger.error(f"Error in background telemetry loop: {e}")
-        time.sleep(60)
+        time.sleep(10)
 
 # Start background thread on server startup
 @app.on_event("startup")
