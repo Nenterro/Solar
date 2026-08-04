@@ -609,3 +609,81 @@ def query_cumulative_history(date_str: str, inverter_id: str = "all") -> List[Di
         return []
 
 
+def update_daily_totals_from_wire(date_str: Optional[str] = None):
+    """
+    Calculate and update current day's daily totals & 10-minute cumulative snapshots
+    directly from 1-minute live telemetry wire readings stored in telemetry_history.
+    """
+    try:
+        if not date_str:
+            date_str = datetime.now(PKT).strftime("%Y-%m-%d")
+
+        now_pkt = datetime.now(PKT)
+        ts_10m = now_pkt.strftime("%Y-%m-%d %H:%M:00")
+
+        conn = get_db_connection()
+        try:
+            for inv_id in ["all", "inv1", "inv2", "inv3"]:
+                t_rows = conn.execute("""
+                    SELECT solar_w, load_w, grid_w, battery_w
+                    FROM telemetry_history
+                    WHERE timestamp LIKE ? AND inverter_id = ?
+                    ORDER BY timestamp ASC
+                """, (f"{date_str}%", inv_id)).fetchall()
+
+                if not t_rows:
+                    continue
+
+                cum_s, cum_l, cum_gi, cum_ge, cum_bc, cum_bd = 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+                for r in t_rows:
+                    s_kw = max(0.0, r["solar_w"] / 1000.0)
+                    l_kw = max(0.0, r["load_w"] / 1000.0)
+                    g_kw = r["grid_w"] / 1000.0
+                    b_kw = r["battery_w"] / 1000.0
+
+                    cum_s += s_kw / 60.0
+                    cum_l += l_kw / 60.0
+                    if g_kw > 0: cum_gi += g_kw / 60.0
+                    else: cum_ge += abs(g_kw) / 60.0
+
+                    if b_kw > 0: cum_bc += b_kw / 60.0
+                    else: cum_bd += abs(b_kw) / 60.0
+
+                s_kwh = round(cum_s, 2)
+                l_kwh = round(cum_l, 2)
+                gi_kwh = round(cum_gi, 2)
+                ge_kwh = round(cum_ge, 2)
+                bc_kwh = round(cum_bc, 2)
+                bd_kwh = round(cum_bd, 2)
+
+                # Upsert into daily_totals
+                conn.execute("""
+                    INSERT INTO daily_totals
+                    (date, inverter_id, solar_kwh, load_kwh, grid_import_kwh, grid_export_kwh, battery_charge_kwh, battery_discharge_kwh, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT(date, inverter_id) DO UPDATE SET
+                        solar_kwh=excluded.solar_kwh,
+                        load_kwh=excluded.load_kwh,
+                        grid_import_kwh=excluded.grid_import_kwh,
+                        grid_export_kwh=excluded.grid_export_kwh,
+                        battery_charge_kwh=excluded.battery_charge_kwh,
+                        battery_discharge_kwh=excluded.battery_discharge_kwh,
+                        updated_at=CURRENT_TIMESTAMP
+                """, (date_str, inv_id, s_kwh, l_kwh, gi_kwh, ge_kwh, bc_kwh, bd_kwh))
+
+                # Save 10-minute snapshot for cumulative graph
+                conn.execute("""
+                    INSERT OR REPLACE INTO cumulative_snapshots
+                    (timestamp, date, inverter_id, solar_kwh, load_kwh, grid_import_kwh, grid_export_kwh, battery_charge_kwh, battery_discharge_kwh)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (ts_10m, date_str, inv_id, s_kwh, l_kwh, gi_kwh, ge_kwh, bc_kwh, bd_kwh))
+
+            conn.commit()
+            logger.info(f"Updated wire daily totals & 10-min cumulative snapshot for {date_str}")
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.error(f"Error updating daily totals from wire: {e}")
+
+
+

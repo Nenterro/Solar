@@ -47,23 +47,12 @@ def background_telemetry_loop():
 
                 db.log_telemetry_snapshot(readings)
 
-            # 2. Every 10 minutes (600 seconds), auto-scrape DESS totals for CURRENT DAY ONLY
+            # 2. Every 10 minutes (600 seconds), update daily totals & 10-minute cumulative snapshots directly from local wire telemetry!
             now_sec = time.time()
             if now_sec - last_dess_poll_time >= 600:
                 last_dess_poll_time = now_sec
-                now_pkt = datetime.now(db.PKT)
-                today_str = now_pkt.strftime("%Y-%m-%d")
-                time_str = now_pkt.strftime("%Y-%m-%d %H:%M:00")
-                
-                # Fetch daily totals for current day across all inverters and save cumulative snapshot
-                for target_inv in ["all", "inv1", "inv2", "inv3"]:
-                    today_records = dess_scraper.fetch_daily_totals_for_day(today_str, target_inv)
-                    if today_records:
-                        db.save_daily_totals(today_records, target_inv)
-                        if len(today_records) > 0:
-                            db.save_cumulative_snapshot(today_str, time_str, target_inv, today_records[0])
-                
-                logger.info(f"Auto-updated current day ({today_str}) cumulative totals from DESS cloud for all inverters")
+                db.update_daily_totals_from_wire()
+                logger.info("Auto-updated current day daily totals & 10-min cumulative snapshots directly from local wire readings")
 
         except Exception as e:
             logger.error(f"Error in background telemetry loop: {e}")
