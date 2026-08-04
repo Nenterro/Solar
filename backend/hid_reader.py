@@ -81,16 +81,13 @@ class HIDInverterReader:
         if len(raw) < 4:
             raise ValueError(f"Invalid frame length: {len(raw)}")
 
-        # Decode 16-bit register load power at 19200 baud
+        # Dynamically read 16-bit big-endian register values from raw 19200 baud stream
         load_w = 0.0
-        for i in range(0, min(16, len(raw)-1)):
+        for i in range(0, min(20, len(raw)-1)):
             w_val = (raw[i] << 8) | raw[i+1]
-            if 500 <= w_val <= 10000:  # Live load range (e.g. 1566 W / 1.57 kW - 1.66 kW)
+            if 50 <= w_val <= 25000:  # Valid live load range (50 W to 25,000 W)
                 load_w = float(w_val)
                 break
-
-        if load_w == 0.0:
-            load_w = 1600.0
 
         load_kw = round(load_w / 1000.0, 2)
         grid_kw = load_kw
@@ -107,7 +104,7 @@ class HIDInverterReader:
             "ac_output_voltage": 230.0,
             "ac_output_frequency": 50.0,
             "ac_output_power_kw": load_kw,
-            "load_percentage": round((load_kw / 5.0) * 100.0, 1),
+            "load_percentage": round((load_kw / 5.0) * 100.0, 1) if load_kw > 0 else 0.0,
             "solar_power_kw": 0.0,
             "pv_voltage": 0.0,
             "pv_current": 0.0,
