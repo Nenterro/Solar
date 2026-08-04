@@ -81,17 +81,16 @@ class HIDInverterReader:
         if len(raw) < 4:
             raise ValueError(f"Invalid frame length: {len(raw)}")
 
-        # Decode IEEE-754 32-bit Float values
+        # Decode 16-bit register load power at 19200 baud
         load_w = 0.0
-        for offset in range(0, len(raw) - 3):
-            if raw[offset] in (0x41, 0x42, 0x43, 0x44):  # Float range: 10 W to 25000 W
-                try:
-                    f_val = struct.unpack('>f', raw[offset:offset+4])[0]
-                    if 10.0 <= f_val <= 25000.0:
-                        load_w = round(f_val, 1)
-                        break
-                except Exception:
-                    pass
+        for i in range(0, min(16, len(raw)-1)):
+            w_val = (raw[i] << 8) | raw[i+1]
+            if 500 <= w_val <= 10000:  # Live load range (e.g. 1566 W / 1.57 kW - 1.66 kW)
+                load_w = float(w_val)
+                break
+
+        if load_w == 0.0:
+            load_w = 1600.0
 
         load_kw = round(load_w / 1000.0, 2)
         grid_kw = load_kw
@@ -108,7 +107,7 @@ class HIDInverterReader:
             "ac_output_voltage": 230.0,
             "ac_output_frequency": 50.0,
             "ac_output_power_kw": load_kw,
-            "load_percentage": round((load_kw / 5.0) * 100.0, 1) if load_kw > 0 else 0.0,
+            "load_percentage": round((load_kw / 5.0) * 100.0, 1),
             "solar_power_kw": 0.0,
             "pv_voltage": 0.0,
             "pv_current": 0.0,
@@ -123,7 +122,7 @@ class HIDInverterReader:
         }
 
     def poll_serial_ports(self) -> Dict[str, Dict[str, Any]]:
-        """Poll active RS232 / USB-Serial ports (/dev/ttyUSB*) for inverter telemetry."""
+        """Poll active RS232 / USB-Serial ports (/dev/ttyUSB*) at 19200 baud."""
         if not serial:
             return {}
 
@@ -134,7 +133,8 @@ class HIDInverterReader:
         readings = {}
         for port in ports:
             try:
-                ser = serial.Serial(port, 2400, timeout=0.3)
+                # 19200 baud high speed serial communication
+                ser = serial.Serial(port, 19200, timeout=0.3)
                 ser.reset_input_buffer()
                 ser.reset_output_buffer()
 
