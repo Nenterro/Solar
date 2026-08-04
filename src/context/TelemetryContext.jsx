@@ -6,11 +6,11 @@ export const getCandidateBackendUrls = () => {
   const custom = localStorage.getItem('solar_custom_backend_url');
   return Array.from(new Set([
     custom,
+    'https://huz-solar.duckdns.org:8888',
     'http://192.168.18.49:8000',
     import.meta.env.VITE_BACKEND_URL,
     'http://localhost:8000',
-    'http://100.97.146.42:8000',
-    'https://huz-solar.duckdns.org:8888'
+    'http://100.97.146.42:8000'
   ])).filter(Boolean);
 };
 

@@ -21,10 +21,10 @@ import { fetchFromBackend, getCandidateUrls, resetCachedUrl } from '../utils/api
 import './Settings.css';
 
 const DEFAULT_CANDIDATES = [
+  'https://huz-solar.duckdns.org:8888',
   'http://192.168.18.49:8000',
   'http://localhost:8000',
-  'http://100.97.146.42:8000',
-  'https://huz-solar.duckdns.org:8888'
+  'http://100.97.146.42:8000'
 ];
 
 export default function Settings() {
