@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Battery as BatteryIcon, Zap, Thermometer, Activity } from 'lucide-react';
+import { fetchFromBackend } from '../utils/api';
 import './Battery.css';
 
 export default function Battery() {
@@ -17,11 +18,8 @@ export default function Battery() {
     // Poll the new RS485 endpoint every 5 seconds
     const fetchBatteryData = async () => {
       try {
-        const response = await fetch('http://192.168.18.49:8000/api/battery');
-        if (response.ok) {
-          const json = await response.json();
-          setData(json);
-        }
+        const json = await fetchFromBackend('/api/battery');
+        setData(json);
       } catch (err) {
         console.error("Failed to fetch battery data", err);
       }
