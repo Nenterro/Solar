@@ -12,7 +12,8 @@ import {
   ArrowDownLeft, 
   ArrowUpRight, 
   BatteryCharging, 
-  Zap 
+  Zap,
+  Database
 } from 'lucide-react';
 import { 
   format, 
@@ -24,6 +25,7 @@ import {
   isSameYear 
 } from 'date-fns';
 import InverterSelector from '../components/InverterSelector';
+import { useTelemetry } from '../context/TelemetryContext';
 import { fetchFromBackend } from '../utils/api';
 import './Data.css';
 
@@ -38,6 +40,7 @@ const METRICS_COLUMNS = [
 ];
 
 export default function Data() {
+  const { telemetry } = useTelemetry() || { telemetry: {} };
   const today = useMemo(() => new Date(), []);
   const [viewMode, setViewMode] = useState('monthly'); 
   const [selectedDate, setSelectedDate] = useState(new Date());
@@ -187,21 +190,22 @@ export default function Data() {
       transition={{ duration: 0.4 }}
       className="stats-page-container"
     >
-      {/* Top Header & Controls */}
-      <div className="stats-header-row">
-        <div>
-          <h2 className="page-title">Daily & Monthly Stats</h2>
-          <p className="page-subtitle">DESSMonitor Scraped Daily & Monthly Totals</p>
+      {/* Desktop Header Panel */}
+      <div className="page-header glass-panel desktop-only" style={{ marginBottom: '16px' }}>
+        <div className="header-title-box">
+          <Database className="header-icon" size={24} />
+          <div>
+            <h2>Historical Energy Data</h2>
+            <p className="subtitle">Daily and monthly production and consumption records</p>
+          </div>
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
-          {/* Global Inverter Selector */}
+        <div className="header-controls">
           <InverterSelector 
             selectedInverter={selectedInverter} 
             onChange={handleInverterChange} 
           />
 
-          {/* View Mode Selector (Daily Totals / Monthly Totals) */}
           <div className="timeframe-pill-selector">
             <button 
               className={`timeframe-btn ${viewMode === 'monthly' ? 'active' : ''}`}
@@ -216,6 +220,24 @@ export default function Data() {
               Monthly Totals
             </button>
           </div>
+        </div>
+      </div>
+
+      {/* Mobile Mode Controls */}
+      <div className="mobile-only" style={{ marginBottom: '12px', justifyContent: 'center' }}>
+        <div className="timeframe-pill-selector">
+          <button 
+            className={`timeframe-btn ${viewMode === 'monthly' ? 'active' : ''}`}
+            onClick={() => setViewMode('monthly')}
+          >
+            Daily Totals
+          </button>
+          <button 
+            className={`timeframe-btn ${viewMode === 'yearly' ? 'active' : ''}`}
+            onClick={() => setViewMode('yearly')}
+          >
+            Monthly Totals
+          </button>
         </div>
       </div>
 

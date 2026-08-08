@@ -5,7 +5,8 @@ import Battery from './pages/Battery';
 import Grid from './pages/Grid';
 import Graphs from './pages/Graphs';
 import Data from './pages/Data';
-import Settings from './pages/Settings';
+import InverterSettings from './pages/InverterSettings';
+import Automations from './pages/Automations';
 import { PocketBaseProvider } from './context/PocketBaseContext';
 import { TelemetryProvider } from './context/TelemetryContext';
 
@@ -21,7 +22,8 @@ export default function App() {
               <Route path="grid" element={<Grid />} />
               <Route path="graphs" element={<Graphs />} />
               <Route path="data" element={<Data />} />
-              <Route path="settings" element={<Settings />} />
+              <Route path="inverter-settings" element={<InverterSettings />} />
+              <Route path="automations" element={<Automations />} />
             </Route>
           </Routes>
         </BrowserRouter>

@@ -77,68 +77,78 @@ export default function Grid() {
   const dateFormattedLabel = useMemo(() => format(selectedDate, 'EEEE, MMM d, yyyy'), [selectedDate]);
 
   // Process history data for Timeline and Total Load Shedding
+  // Process Grid Activity Timeline with exact minute-of-day alignment & surrounding fill
   const { timelineBlocks, totalSheddingMins } = useMemo(() => {
     if (!historyData || historyData.length === 0) return { timelineBlocks: [], totalSheddingMins: 0 };
+
+    // 1. Build a lookup map of minute-of-day (0 to 1439) -> record
+    const minuteMap = new Map();
+    historyData.forEach(r => {
+      if (r.time && typeof r.time === 'string' && r.time.includes(':')) {
+        const parts = r.time.split(':');
+        const h = parseInt(parts[0], 10);
+        const m = parseInt(parts[1], 10);
+        if (!isNaN(h) && !isNaN(m)) {
+          const minIdx = h * 60 + m;
+          minuteMap.set(minIdx, r);
+        }
+      }
+    });
+
+    const recordedMins = Array.from(minuteMap.keys()).sort((a, b) => a - b);
+    if (recordedMins.length === 0) return { timelineBlocks: [], totalSheddingMins: 0 };
+
+    const isToday = isSameDay(selectedDate, today);
+    const now = new Date();
+    const currentMin = isToday ? (now.getHours() * 60 + now.getMinutes()) : 1439;
+
+    // Helper to find nearest surrounding recorded reading for missing telemetry minutes
+    const getEffectiveRecord = (m) => {
+      if (minuteMap.has(m)) return minuteMap.get(m);
+      
+      // Find nearest recorded minute
+      let closestMin = recordedMins[0];
+      let minDiff = Math.abs(m - closestMin);
+
+      for (let i = 1; i < recordedMins.length; i++) {
+        const rMin = recordedMins[i];
+        const diff = Math.abs(m - rMin);
+        if (diff < minDiff) {
+          minDiff = diff;
+          closestMin = rMin;
+        } else if (diff > minDiff) {
+          break;
+        }
+      }
+      return minuteMap.get(closestMin);
+    };
 
     let blocks = [];
     let currentBlock = null;
     let sheddingMins = 0;
 
-    // We assume 1440 points (1 per min) for a full day. 
-    // The history API usually returns a full array filled with 0s for missing future data, 
-    // but gridActive might be false for future data. We should only count up to the current time if it's 'today'.
-    
-    // To properly calculate percentages for the timeline, we map to 0-1440 minutes.
-    historyData.forEach((record, index) => {
-      // If it's today and the record time is in the future, we should probably stop or treat it as empty.
-      // But let's keep it simple: the backend backfills future data with 0s, and gridActive=False.
-      // We will only process up to the last known valid timestamp if it's today.
-      
-      const isActive = record.gridActive;
-      
-      if (!isActive && record.solar !== undefined) {
-        // If it's literally undefined/empty (future), we shouldn't count it as load shedding.
-        // Actually, db.py backfills with solar:0, load:0, etc. 
-        // We will just assume if the backend provided it, it's a valid minute.
-      }
-      
-      if (!isActive) {
+    // 2. Iterate minute by minute from 00:00 (0) up to current time (or 1439 for past dates)
+    for (let m = 0; m <= currentMin; m++) {
+      const rec = getEffectiveRecord(m);
+      const isGridActive = rec ? Boolean(rec.gridActive) : true;
+      const statusState = isGridActive ? 'online' : 'offline';
+
+      if (!isGridActive) {
         sheddingMins++;
       }
 
       if (!currentBlock) {
-        currentBlock = { isActive, startIdx: index, endIdx: index };
-      } else if (currentBlock.isActive === isActive) {
-        currentBlock.endIdx = index;
+        currentBlock = { statusState, startMin: m, endMin: m };
+      } else if (currentBlock.statusState === statusState) {
+        currentBlock.endMin = m;
       } else {
         blocks.push(currentBlock);
-        currentBlock = { isActive, startIdx: index, endIdx: index };
+        currentBlock = { statusState, startMin: m, endMin: m };
       }
-    });
+    }
 
-    if (currentBlock) blocks.push(currentBlock);
-
-    // If viewing today, we should subtract the future minutes from load shedding calculation
-    if (isSameDay(selectedDate, today)) {
-      const now = new Date();
-      const currentMin = now.getHours() * 60 + now.getMinutes();
-      
-      // Filter out blocks that are entirely in the future
-      blocks = blocks.filter(b => b.startIdx <= currentMin);
-      
-      // Cap the last block to current time
-      if (blocks.length > 0) {
-        const lastBlock = blocks[blocks.length - 1];
-        if (lastBlock.endIdx > currentMin) {
-          lastBlock.endIdx = currentMin;
-        }
-      }
-      
-      // Recalculate shedding mins strictly up to current time
-      sheddingMins = 0;
-      for (let i = 0; i <= currentMin; i++) {
-        if (historyData[i] && !historyData[i].gridActive) sheddingMins++;
-      }
+    if (currentBlock) {
+      blocks.push(currentBlock);
     }
 
     return { timelineBlocks: blocks, totalSheddingMins: sheddingMins };
@@ -151,28 +161,21 @@ export default function Grid() {
     return `${h}h ${m}m`;
   };
 
-  // Mobile Header Dot Portal
-  const mobileHeaderControls = headerSlot ? createPortal(
-    <div className={`status-badge glass-panel`} style={{ padding: '4px 12px' }}>
-      <div className="status-dot" style={{ backgroundColor: isOnline ? '#10b981' : '#ef4444', boxShadow: `0 0 8px ${isOnline ? '#10b981' : '#ef4444'}` }}></div>
-    </div>,
-    headerSlot
-  ) : null;
-
   return (
     <div className="grid-page">
-      {mobileHeaderControls}
-      <div className="grid-header glass-panel desktop-only">
-        <div className="title-wrapper">
-          <Power size={32} style={{ color: isOnline ? '#10b981' : '#ef4444' }} />
+      <div className="page-header glass-panel desktop-only">
+        <div className="header-title-box">
+          <Power className="header-icon" size={24} style={{ color: isOnline ? '#10b981' : '#ef4444' }} />
           <div>
-            <h1 className="page-title">WAPDA Grid Status</h1>
-            <p className="subtitle">Real-time Utility Monitoring</p>
+            <h2>WAPDA Grid Status</h2>
+            <p className="subtitle">Real-time Utility Monitoring & Export Statistics</p>
           </div>
         </div>
-        <div className={`status-badge ${isOnline ? 'online' : 'offline'}`}>
-          <div className="status-dot"></div>
-          {isOnline ? 'Online' : 'Load Shedding (Offline)'}
+        <div className="header-controls">
+          <div className={`status-badge ${isOnline ? 'online' : 'offline'}`}>
+            <div className="status-dot"></div>
+            <span>{isOnline ? 'Online' : 'Load Shedding (Offline)'}</span>
+          </div>
         </div>
       </div>
 
@@ -260,13 +263,13 @@ export default function Grid() {
                 <div className="timeline-track">
                   {timelineBlocks.map((block, i) => {
                     // Total minutes in a day is 1440
-                    const leftPct = (block.startIdx / 1440) * 100;
-                    const widthPct = ((block.endIdx - block.startIdx + 1) / 1440) * 100;
+                    const leftPct = (block.startMin / 1440) * 100;
+                    const widthPct = ((block.endMin - block.startMin + 1) / 1440) * 100;
                     
                     return (
                       <div 
                         key={i}
-                        className={`timeline-segment ${block.isActive ? 'active' : 'inactive'}`}
+                        className={`timeline-segment ${block.statusState}`}
                         style={{
                           left: `${leftPct}%`,
                           width: `${widthPct}%`
@@ -274,9 +277,9 @@ export default function Grid() {
                         onMouseEnter={(e) => {
                           const rect = e.currentTarget.parentNode.getBoundingClientRect();
                           setHoveredBlock({
-                            isActive: block.isActive,
-                            start: `${Math.floor(block.startIdx/60).toString().padStart(2,'0')}:${(block.startIdx%60).toString().padStart(2,'0')}`,
-                            end: `${Math.floor(block.endIdx/60).toString().padStart(2,'0')}:${(block.endIdx%60).toString().padStart(2,'0')}`,
+                            statusState: block.statusState,
+                            start: `${Math.floor(block.startMin/60).toString().padStart(2,'0')}:${(block.startMin%60).toString().padStart(2,'0')}`,
+                            end: `${Math.floor(block.endMin/60).toString().padStart(2,'0')}:${(block.endMin%60).toString().padStart(2,'0')}`,
                             x: e.clientX - rect.left
                           });
                         }}
@@ -293,8 +296,8 @@ export default function Grid() {
                 {hoveredBlock && (
                   <div className="timeline-tooltip glass-panel" style={{ left: `${hoveredBlock.x}px` }}>
                     <div className="tooltip-status">
-                      <div className={`status-dot ${hoveredBlock.isActive ? 'online' : 'offline'}`} />
-                      {hoveredBlock.isActive ? 'Online' : 'Offline'}
+                      <div className={`status-dot ${hoveredBlock.statusState === 'online' ? 'online' : hoveredBlock.statusState === 'offline' ? 'error' : 'offline'}`} />
+                      {hoveredBlock.statusState === 'online' ? 'Grid Online' : hoveredBlock.statusState === 'offline' ? 'Load Shedding' : 'No Telemetry'}
                     </div>
                     <div className="tooltip-time">
                       {hoveredBlock.start} - {hoveredBlock.end}

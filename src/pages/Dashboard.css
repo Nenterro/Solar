@@ -11,33 +11,45 @@
 }
 
 /* ---- Desktop header ---- */
-.dashboard-header-row {
+.dashboard-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  flex-wrap: wrap;
-  gap: 12px;
+  padding: 16px 24px;
+  border-radius: 16px;
+  background: var(--glass-bg, rgba(30, 30, 40, 0.7));
+  backdrop-filter: blur(12px);
+  border: 1px solid var(--glass-border, rgba(255, 255, 255, 0.08));
   flex-shrink: 0;
 }
 
-.dash-title {
-  font-size: 1.5rem;
+.header-title-box {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.header-icon {
+  color: var(--accent-color, #f59e0b);
+}
+
+.header-title-box h2 {
+  font-size: 1.3rem;
   font-weight: 700;
-  color: var(--text-primary);
+  color: #f8fafc;
   margin: 0;
 }
 
-.dash-subtitle {
-  font-size: 0.85rem;
-  color: var(--text-secondary);
-  margin: 4px 0 0 0;
+.header-title-box .subtitle {
+  font-size: 0.82rem;
+  color: #94a3b8;
+  margin: 2px 0 0 0;
 }
 
-.header-status-group {
+.header-controls {
   display: flex;
   align-items: center;
   gap: 12px;
-  flex-wrap: wrap;
 }
 
 .status-badge {

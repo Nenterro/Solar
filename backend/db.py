@@ -65,6 +65,7 @@ def init_db():
             )
         """)
 
+
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS cumulative_snapshots (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -77,6 +78,19 @@ def init_db():
                 grid_export_kwh REAL DEFAULT 0.0,
                 battery_charge_kwh REAL DEFAULT 0.0,
                 battery_discharge_kwh REAL DEFAULT 0.0
+            )
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS automations (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                time_of_day TEXT NOT NULL,
+                inverter_id TEXT NOT NULL,
+                enabled INTEGER DEFAULT 1,
+                actions TEXT NOT NULL,
+                last_triggered TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
 
@@ -111,6 +125,8 @@ def nuke_db():
             conn.execute("DROP TABLE IF EXISTS telemetry_history;")
             conn.execute("DROP TABLE IF EXISTS daily_totals;")
             conn.execute("DROP TABLE IF EXISTS realtime;")
+            conn.execute("DROP TABLE IF EXISTS cumulative_snapshots;")
+            conn.execute("DROP TABLE IF EXISTS lifetime_baselines;")
             conn.commit()
         finally:
             conn.close()
@@ -157,6 +173,10 @@ def log_telemetry_snapshot(readings: Dict[str, Dict[str, Any]]):
             # 1. Insert per-inverter rows
             valid_readings = {}
             for inv_id, r in readings.items():
+                # Skip simulated/disconnected inverters — don't write zeros to DB
+                if r.get("is_simulated", False) or not r.get("connected", True):
+                    continue
+                    
                 solar_kw = r.get("solar_power_kw", 0.0)
                 grid_kw = r.get("grid_power_kw", 0.0)
                 bat_kw = r.get("battery_power_kw", 0.0)
@@ -205,7 +225,7 @@ def log_telemetry_snapshot(readings: Dict[str, Dict[str, Any]]):
             avg_bat_v = sum(bat_vs) / len(bat_vs) if bat_vs else 0.0
             
             grid_vs = [r.get("grid_voltage", 0.0) for r in readings_to_sum]
-            avg_grid_v = sum(grid_vs) / len(grid_vs) if grid_vs else 0.0
+            max_grid_v = max(grid_vs) if grid_vs else 0.0
             
             temps = [r.get("inverter_temp_c", 0.0) for r in readings_to_sum]
             avg_temp = sum(temps) / len(temps) if temps else 0.0
@@ -214,13 +234,141 @@ def log_telemetry_snapshot(readings: Dict[str, Dict[str, Any]]):
                 INSERT INTO telemetry_history 
                 (timestamp, inverter_id, solar_w, load_w, grid_w, battery_w, battery_pct, battery_v, grid_v, temp_c)
                 VALUES (?, 'all', ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (time_str, total_solar, total_load, total_grid, total_bat, avg_soc, avg_bat_v, avg_grid_v, avg_temp))
+            """, (time_str, total_solar, total_load, total_grid, total_bat, avg_soc, avg_bat_v, max_grid_v, avg_temp))
 
             conn.commit()
         finally:
             conn.close()
     except Exception as e:
         logger.error(f"Error logging telemetry snapshot: {e}")
+
+
+def update_lifetime_totals_and_calculate_daily(lifetime_readings: Dict[str, Dict[str, float]]):
+    """
+    Process raw accumulated lifetime energy kWh readings from inverters (QET, QLT, QGT, QFT, QCT).
+    Establish start-of-day baseline if not present for today, calculate today's daily total as:
+    Daily = max(0, Lifetime_Current - Lifetime_StartOfDay)
+    and upsert into daily_totals table.
+    """
+    try:
+        conn = get_db_connection()
+        try:
+            now_pkt = datetime.now(PKT)
+            today_str = now_pkt.strftime("%Y-%m-%d")
+
+            # Create baselines table if missing
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS lifetime_baselines (
+                    date TEXT NOT NULL,
+                    inverter_id TEXT NOT NULL,
+                    solar_start REAL DEFAULT 0.0,
+                    load_start REAL DEFAULT 0.0,
+                    grid_import_start REAL DEFAULT 0.0,
+                    grid_export_start REAL DEFAULT 0.0,
+                    battery_charge_start REAL DEFAULT 0.0,
+                    battery_discharge_start REAL DEFAULT 0.0,
+                    PRIMARY KEY (date, inverter_id)
+                )
+            """)
+
+            daily_totals_calculated = {}
+
+            for inv_id, r in lifetime_readings.items():
+                curr_solar = float(r.get("solar") or 0.0)
+                curr_load = float(r.get("load") or 0.0)
+                curr_gi = float(r.get("grid_import") or 0.0)
+                curr_ge = float(r.get("grid_export") or 0.0)
+                curr_bc = float(r.get("battery_charge") or 0.0)
+                curr_bd = float(r.get("battery_discharge") or 0.0)
+
+                if curr_solar == 0.0 and curr_load == 0.0 and curr_gi == 0.0:
+                    continue
+
+                # Fetch or initialize start-of-day baseline
+                base_row = conn.execute(
+                    "SELECT * FROM lifetime_baselines WHERE date = ? AND inverter_id = ?",
+                    (today_str, inv_id)
+                ).fetchone()
+
+                if not base_row:
+                    conn.execute("""
+                        INSERT OR REPLACE INTO lifetime_baselines
+                        (date, inverter_id, solar_start, load_start, grid_import_start, grid_export_start, battery_charge_start, battery_discharge_start)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (today_str, inv_id, curr_solar, curr_load, curr_gi, curr_ge, curr_bc, curr_bd))
+                    conn.commit()
+                    
+                    solar_start, load_start, gi_start, ge_start, bc_start, bd_start = (
+                        curr_solar, curr_load, curr_gi, curr_ge, curr_bc, curr_bd
+                    )
+                else:
+                    solar_start = base_row["solar_start"]
+                    load_start = base_row["load_start"]
+                    gi_start = base_row["grid_import_start"]
+                    ge_start = base_row["grid_export_start"]
+                    bc_start = base_row["battery_charge_start"]
+                    bd_start = base_row["battery_discharge_start"]
+
+                # Daily delta = max(0, curr - baseline)
+                daily_s = max(0.0, round(curr_solar - solar_start, 1)) if (curr_solar - solar_start) <= 300.0 else 0.0
+                daily_l = max(0.0, round(curr_load - load_start, 1)) if (curr_load - load_start) <= 300.0 else 0.0
+                daily_gi = max(0.0, round(curr_gi - gi_start, 1)) if (curr_gi - gi_start) <= 300.0 else 0.0
+                daily_ge = max(0.0, round(curr_ge - ge_start, 1)) if (curr_ge - ge_start) <= 300.0 else 0.0
+                daily_bc = max(0.0, round(curr_bc - bc_start, 1)) if (curr_bc - bc_start) <= 300.0 else 0.0
+                daily_bd = max(0.0, round(curr_bd - bd_start, 1)) if (curr_bd - bd_start) <= 300.0 else 0.0
+
+                daily_totals_calculated[inv_id] = {
+                    "solar": daily_s,
+                    "load": daily_l,
+                    "gridImport": daily_gi,
+                    "gridExport": daily_ge,
+                    "batteryCharge": daily_bc,
+                    "batteryDischarge": daily_bd
+                }
+
+                conn.execute("""
+                    INSERT INTO daily_totals 
+                    (date, inverter_id, solar_kwh, load_kwh, grid_import_kwh, grid_export_kwh, battery_charge_kwh, battery_discharge_kwh, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT(date, inverter_id) DO UPDATE SET
+                        solar_kwh=excluded.solar_kwh,
+                        load_kwh=excluded.load_kwh,
+                        grid_import_kwh=excluded.grid_import_kwh,
+                        grid_export_kwh=excluded.grid_export_kwh,
+                        battery_charge_kwh=excluded.battery_charge_kwh,
+                        battery_discharge_kwh=excluded.battery_discharge_kwh,
+                        updated_at=CURRENT_TIMESTAMP
+                """, (today_str, inv_id, daily_s, daily_l, daily_gi, daily_ge, daily_bc, daily_bd))
+
+            # System aggregate ('all')
+            if daily_totals_calculated:
+                tot_s = round(sum(d["solar"] for d in daily_totals_calculated.values()), 1)
+                tot_l = round(sum(d["load"] for d in daily_totals_calculated.values()), 1)
+                tot_gi = round(sum(d["gridImport"] for d in daily_totals_calculated.values()), 1)
+                tot_ge = round(sum(d["gridExport"] for d in daily_totals_calculated.values()), 1)
+                tot_bc = round(sum(d["batteryCharge"] for d in daily_totals_calculated.values()), 1)
+                tot_bd = round(sum(d["batteryDischarge"] for d in daily_totals_calculated.values()), 1)
+
+                conn.execute("""
+                    INSERT INTO daily_totals 
+                    (date, inverter_id, solar_kwh, load_kwh, grid_import_kwh, grid_export_kwh, battery_charge_kwh, battery_discharge_kwh, updated_at)
+                    VALUES (?, 'all', ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT(date, inverter_id) DO UPDATE SET
+                        solar_kwh=excluded.solar_kwh,
+                        load_kwh=excluded.load_kwh,
+                        grid_import_kwh=excluded.grid_import_kwh,
+                        grid_export_kwh=excluded.grid_export_kwh,
+                        battery_charge_kwh=excluded.battery_charge_kwh,
+                        battery_discharge_kwh=excluded.battery_discharge_kwh,
+                        updated_at=CURRENT_TIMESTAMP
+                """, (today_str, tot_s, tot_l, tot_gi, tot_ge, tot_bc, tot_bd))
+
+            conn.commit()
+            logger.info(f"Updated lifetime-based daily totals for {today_str}: {len(daily_totals_calculated)} inverters")
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.error(f"Error updating lifetime-based daily totals: {e}")
 
 
 def save_daily_totals(records: List[Dict[str, Any]], inverter_id: str = "all"):
@@ -275,44 +423,138 @@ def save_daily_totals(records: List[Dict[str, Any]], inverter_id: str = "all"):
         logger.error(f"Error saving daily totals: {e}")
 
 
-def query_daily_totals_for_month(year_month: str, inverter_id: str = "all") -> List[Dict[str, Any]]:
+def get_combined_daily_total(date_str: str, inverter_id: str = "all") -> Dict[str, Any]:
     """
-    Query daily totals strictly from local SQLite DB for a given month (YYYY-MM).
-    Does NOT auto-fetch cloud data. Filtering is minimal since outliers are already
-    filtered at ingestion time in save_daily_totals().
+    Returns the daily total for a given date by combining:
+    1. Hardware lifetime register delta (from daily_totals table)
+    2. 1-minute power integration (from telemetry_history table)
+    Filters out any corrupt/inflated baseline jumps > 100.0 kWh (or > 35.0 kWh per single inverter)
+    and prefers the 1-minute power integration total if hardware value is suspiciously inflated.
     """
     try:
         conn = get_db_connection()
         try:
-            rows = conn.execute("""
-                SELECT date, solar_kwh, load_kwh, grid_import_kwh, grid_export_kwh, battery_charge_kwh, battery_discharge_kwh
+            # Maximum physical ceiling per day (kWh)
+            max_daily_cap = 100.0 if inverter_id == "all" else 35.0
+
+            # 1. Fetch hardware daily total from daily_totals table
+            row = conn.execute("""
+                SELECT solar_kwh, load_kwh, grid_import_kwh, grid_export_kwh, battery_charge_kwh, battery_discharge_kwh
                 FROM daily_totals
-                WHERE date LIKE ? AND inverter_id = ?
-                ORDER BY date ASC
-            """, (f"{year_month}%", inverter_id)).fetchall()
+                WHERE date = ? AND inverter_id = ?
+            """, (date_str, inverter_id)).fetchone()
+
+            hw_s = round(row["solar_kwh"], 2) if row else 0.0
+            hw_l = round(row["load_kwh"], 2) if row else 0.0
+            hw_gi = round(row["grid_import_kwh"], 2) if row else 0.0
+            hw_ge = round(row["grid_export_kwh"], 2) if row else 0.0
+            hw_bc = round(row["battery_charge_kwh"], 2) if row else 0.0
+            hw_bd = round(row["battery_discharge_kwh"], 2) if row else 0.0
+
+            # Discard inflated hardware register jumps above max physical ceiling
+            if hw_s > max_daily_cap: hw_s = 0.0
+            if hw_l > max_daily_cap: hw_l = 0.0
+            if hw_gi > max_daily_cap: hw_gi = 0.0
+            if hw_ge > max_daily_cap: hw_ge = 0.0
+            if hw_bc > max_daily_cap: hw_bc = 0.0
+            if hw_bd > max_daily_cap: hw_bd = 0.0
+
+            # 2. Integrate 1-minute telemetry_history power samples
+            t_rows = conn.execute("""
+                SELECT solar_w, load_w, grid_w, battery_w
+                FROM telemetry_history
+                WHERE timestamp LIKE ? AND inverter_id = ?
+            """, (f"{date_str}%", inverter_id)).fetchall()
+
+            int_s, int_l, int_gi, int_ge, int_bc, int_bd = 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+            if t_rows:
+                for r in t_rows:
+                    s_kw = max(0.0, r["solar_w"] / 1000.0)
+                    l_kw = max(0.0, r["load_w"] / 1000.0)
+                    g_kw = r["grid_w"] / 1000.0
+                    b_kw = r["battery_w"] / 1000.0
+
+                    int_s += s_kw / 60.0
+                    int_l += l_kw / 60.0
+                    if g_kw > 0: int_gi += g_kw / 60.0
+                    else: int_ge += abs(g_kw) / 60.0
+
+                    if b_kw > 0: int_bc += b_kw / 60.0
+                    else: int_bd += abs(b_kw) / 60.0
+
+            # If 1-minute integrated total exists, prefer it if hardware value is zero or suspiciously inflated (> 1.5x int)
+            if int_s > 0:
+                final_s = int_s if (hw_s == 0.0 or hw_s > int_s * 1.5) else max(hw_s, int_s)
+            else:
+                final_s = hw_s
+
+            if int_l > 0:
+                final_l = int_l if (hw_l == 0.0 or hw_l > int_l * 1.5) else max(hw_l, int_l)
+            else:
+                final_l = hw_l
+
+            if int_gi > 0:
+                final_gi = int_gi if (hw_gi == 0.0 or hw_gi > int_gi * 1.5) else max(hw_gi, int_gi)
+            else:
+                final_gi = hw_gi
+
+            if int_ge > 0:
+                final_ge = int_ge if (hw_ge == 0.0 or hw_ge > int_ge * 1.5) else max(hw_ge, int_ge)
+            else:
+                final_ge = hw_ge
+
+            if int_bc > 0:
+                final_bc = int_bc if (hw_bc == 0.0 or hw_bc > int_bc * 1.5) else max(hw_bc, int_bc)
+            else:
+                final_bc = hw_bc
+
+            if int_bd > 0:
+                final_bd = int_bd if (hw_bd == 0.0 or hw_bd > int_bd * 1.5) else max(hw_bd, int_bd)
+            else:
+                final_bd = hw_bd
+
+            return {
+                "time": date_str,
+                "solar": round(final_s, 1),
+                "load": round(final_l, 1),
+                "gridImport": round(final_gi, 1),
+                "gridExport": round(final_ge, 1),
+                "batteryCharge": round(final_bc, 1),
+                "batteryDischarge": round(final_bd, 1)
+            }
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.error(f"Error computing combined daily total: {e}")
+        return {
+            "time": date_str, "solar": 0.0, "load": 0.0, "gridImport": 0.0,
+            "gridExport": 0.0, "batteryCharge": 0.0, "batteryDischarge": 0.0
+        }
+
+
+def query_daily_totals_for_month(year_month: str, inverter_id: str = "all") -> List[Dict[str, Any]]:
+    """
+    Query daily totals strictly from local SQLite DB for a given month (YYYY-MM).
+    Combines hardware lifetime deltas and 1-minute power integration with outlier rejection.
+    """
+    try:
+        conn = get_db_connection()
+        try:
+            # Find all dates recorded in daily_totals or telemetry_history for year_month
+            rows = conn.execute("""
+                SELECT DISTINCT date FROM (
+                    SELECT date FROM daily_totals WHERE date LIKE ? AND inverter_id = ?
+                    UNION
+                    SELECT substr(timestamp, 1, 10) as date FROM telemetry_history WHERE timestamp LIKE ? AND inverter_id = ?
+                ) ORDER BY date ASC
+            """, (f"{year_month}%", inverter_id, f"{year_month}%", inverter_id)).fetchall()
 
             res = []
             for r in rows:
-                s = round(r["solar_kwh"], 1)
-                l = round(r["load_kwh"], 1)
-                gi = round(r["grid_import_kwh"], 1)
-                ge = round(r["grid_export_kwh"], 1)
-                bc = round(r["battery_charge_kwh"], 1)
-                bd = round(r["battery_discharge_kwh"], 1)
-
-                # Skip empty zero rows only
-                if s == 0.0 and l == 0.0 and gi == 0.0 and ge == 0.0 and bc == 0.0 and bd == 0.0:
-                    continue
-
-                res.append({
-                    "time": r["date"],
-                    "solar": s,
-                    "load": l,
-                    "gridImport": gi,
-                    "gridExport": ge,
-                    "batteryCharge": bc,
-                    "batteryDischarge": bd,
-                })
+                d_str = r["date"]
+                if not d_str: continue
+                tot = get_combined_daily_total(d_str, inverter_id)
+                res.append(tot)
             return res
         finally:
             conn.close()
@@ -321,47 +563,54 @@ def query_daily_totals_for_month(year_month: str, inverter_id: str = "all") -> L
         return []
 
 
+def query_daily_totals_for_day(date_str: str, inverter_id: str = "all") -> Optional[Dict[str, Any]]:
+    """
+    Query daily total strictly from local SQLite DB for a single day (YYYY-MM-DD).
+    """
+    return get_combined_daily_total(date_str, inverter_id)
+
+
 def query_daily_totals_for_year(year_str: str, inverter_id: str = "all") -> List[Dict[str, Any]]:
     """
     Query monthly aggregated totals strictly from local SQLite DB for a given year (YYYY).
+    Aggregates from sanitized monthly daily totals.
     """
     try:
         conn = get_db_connection()
         try:
-            rows = conn.execute("""
-                SELECT strftime('%Y-%m', date) as m_str,
-                       SUM(solar_kwh) as solar,
-                       SUM(load_kwh) as load,
-                       SUM(grid_import_kwh) as gridImport,
-                       SUM(grid_export_kwh) as gridExport,
-                       SUM(battery_charge_kwh) as batteryCharge,
-                       SUM(battery_discharge_kwh) as batteryDischarge
+            # Query all recorded months in the given year
+            month_rows = conn.execute("""
+                SELECT DISTINCT strftime('%Y-%m', date) as m_str
                 FROM daily_totals
                 WHERE date LIKE ? AND inverter_id = ?
-                GROUP BY m_str
                 ORDER BY m_str ASC
             """, (f"{year_str}%", inverter_id)).fetchall()
 
             res = []
-            for r in rows:
-                s = round(r["solar"] or 0.0, 1)
-                l = round(r["load"] or 0.0, 1)
-                gi = round(r["gridImport"] or 0.0, 1)
-                ge = round(r["gridExport"] or 0.0, 1)
-                bc = round(r["batteryCharge"] or 0.0, 1)
-                bd = round(r["batteryDischarge"] or 0.0, 1)
+            for m in month_rows:
+                m_str = m["m_str"]
+                if not m_str: continue
+                month_days = query_daily_totals_for_month(m_str, inverter_id)
+                if not month_days: continue
 
-                if s == 0.0 and l == 0.0 and gi == 0.0 and ge == 0.0 and bc == 0.0 and bd == 0.0:
+                m_solar = round(sum(d.get("solar", 0.0) for d in month_days), 1)
+                m_load = round(sum(d.get("load", 0.0) for d in month_days), 1)
+                m_gi = round(sum(d.get("gridImport", 0.0) for d in month_days), 1)
+                m_ge = round(sum(d.get("gridExport", 0.0) for d in month_days), 1)
+                m_bc = round(sum(d.get("batteryCharge", 0.0) for d in month_days), 1)
+                m_bd = round(sum(d.get("batteryDischarge", 0.0) for d in month_days), 1)
+
+                if m_solar == 0.0 and m_load == 0.0 and m_gi == 0.0 and m_ge == 0.0:
                     continue
 
                 res.append({
-                    "time": r["m_str"],
-                    "solar": s,
-                    "load": l,
-                    "gridImport": gi,
-                    "gridExport": ge,
-                    "batteryCharge": bc,
-                    "batteryDischarge": bd,
+                    "time": m_str,
+                    "solar": m_solar,
+                    "load": m_load,
+                    "gridImport": m_gi,
+                    "gridExport": m_ge,
+                    "batteryCharge": m_bc,
+                    "batteryDischarge": m_bd,
                 })
             return res
         finally:
@@ -371,35 +620,7 @@ def query_daily_totals_for_year(year_str: str, inverter_id: str = "all") -> List
         return []
 
 
-def query_daily_totals_for_day(date_str: str, inverter_id: str = "all") -> Optional[Dict[str, Any]]:
-    """
-    Query daily total strictly from local SQLite DB for a single day (YYYY-MM-DD).
-    """
-    try:
-        conn = get_db_connection()
-        try:
-            row = conn.execute("""
-                SELECT date, solar_kwh, load_kwh, grid_import_kwh, grid_export_kwh, battery_charge_kwh, battery_discharge_kwh
-                FROM daily_totals
-                WHERE date = ? AND inverter_id = ?
-            """, (date_str, inverter_id)).fetchone()
 
-            if row:
-                return {
-                    "time": row["date"],
-                    "solar": round(row["solar_kwh"], 1),
-                    "load": round(row["load_kwh"], 1),
-                    "gridImport": round(row["grid_import_kwh"], 1),
-                    "gridExport": round(row["grid_export_kwh"], 1),
-                    "batteryCharge": round(row["battery_charge_kwh"], 1),
-                    "batteryDischarge": round(row["battery_discharge_kwh"], 1),
-                }
-            return None
-        finally:
-            conn.close()
-    except Exception as e:
-        logger.error(f"Error querying single daily total: {e}")
-        return None
 
 
 def query_daily_history(date_str: str, inverter_id: str = "all") -> List[Dict[str, Any]]:
@@ -477,56 +698,27 @@ def save_cumulative_snapshot(date_str: str, timestamp_str: str, inverter_id: str
             conn.close()
     except Exception as e:
         logger.error(f"Error saving cumulative snapshot: {e}")
+
 def query_cumulative_history(date_str: str, inverter_id: str = "all") -> List[Dict[str, Any]]:
     """
-    Query 10-minute interval cumulative energy history for Cumulative Graph view.
-    Plots the intra-day accumulation of energy for a selected single day from 00:00 up to current time.
+    Cumulative Intraday Graph Endpoint.
+    Uses the current value of the daily total (calculated from lifetime differences)
+    to render the cumulative intraday accumulation curve.
     """
     try:
         conn = get_db_connection()
         try:
-            # 1. Try logged 10-minute cumulative_snapshots for the day
-            rows = conn.execute("""
-                SELECT timestamp, solar_kwh, load_kwh, grid_import_kwh, grid_export_kwh, battery_charge_kwh, battery_discharge_kwh
-                FROM cumulative_snapshots
-                WHERE date = ? AND inverter_id = ?
-                ORDER BY timestamp ASC
-            """, (date_str, inverter_id)).fetchall()
+            # 1. Fetch current calculated daily total for the day
+            day_tot = query_daily_totals_for_day(date_str, inverter_id)
+            
+            tot_solar = day_tot.get("solar", 0.0) if day_tot else 0.0
+            tot_load = day_tot.get("load", 0.0) if day_tot else 0.0
+            tot_gi = day_tot.get("gridImport", 0.0) if day_tot else 0.0
+            tot_ge = day_tot.get("gridExport", 0.0) if day_tot else 0.0
+            tot_bc = day_tot.get("batteryCharge", 0.0) if day_tot else 0.0
+            tot_bd = day_tot.get("batteryDischarge", 0.0) if day_tot else 0.0
 
-            if rows:
-                results = [{
-                    "time": "00:00",
-                    "solar": 0.0, "load": 0.0, "gridImport": 0.0,
-                    "gridExport": 0.0, "batteryCharge": 0.0, "batteryDischarge": 0.0
-                }]
-                prev_s, prev_l, prev_gi, prev_ge, prev_bc, prev_bd = 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
-
-                for r in rows:
-                    ts_str = r["timestamp"]
-                    time_label = ts_str[11:16] if len(ts_str) >= 16 else ts_str
-                    if time_label == "00:00":
-                        continue
-
-                    # Strictly enforce monotonic non-decreasing accumulation
-                    prev_s = max(prev_s, round(r["solar_kwh"], 2))
-                    prev_l = max(prev_l, round(r["load_kwh"], 2))
-                    prev_gi = max(prev_gi, round(r["grid_import_kwh"], 2))
-                    prev_ge = max(prev_ge, round(r["grid_export_kwh"], 2))
-                    prev_bc = max(prev_bc, round(r["battery_charge_kwh"], 2))
-                    prev_bd = max(prev_bd, round(r["battery_discharge_kwh"], 2))
-
-                    results.append({
-                        "time": time_label,
-                        "solar": prev_s,
-                        "load": prev_l,
-                        "gridImport": prev_gi,
-                        "gridExport": prev_ge,
-                        "batteryCharge": prev_bc,
-                        "batteryDischarge": prev_bd
-                    })
-                return results
-
-            # 2. Fallback: Integrate 1-minute telemetry_history points for the day
+            # 2. Fetch 1-minute telemetry history points for the day to format the timeline
             t_rows = conn.execute("""
                 SELECT timestamp, solar_w, load_w, grid_w, battery_w, battery_pct
                 FROM telemetry_history
@@ -541,101 +733,12 @@ def query_cumulative_history(date_str: str, inverter_id: str = "all") -> List[Di
                     "gridExport": 0.0, "batteryCharge": 0.0, "batteryDischarge": 0.0,
                     "batteryLevel": t_rows[0]["battery_pct"] if t_rows else 0.0
                 }]
-                cum_solar, cum_load, cum_gi, cum_ge, cum_bc, cum_bd = 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
-
-                for idx, r in enumerate(t_rows):
-                    s_kw = max(0.0, r["solar_w"] / 1000.0)
-                    l_kw = max(0.0, r["load_w"] / 1000.0)
-                    g_kw = r["grid_w"] / 1000.0
-                    b_kw = r["battery_w"] / 1000.0
-
-                    cum_solar += s_kw / 60.0
-                    cum_load += l_kw / 60.0
-                    if g_kw > 0: cum_gi += g_kw / 60.0
-                    else: cum_ge += abs(g_kw) / 60.0
-
-                    if b_kw > 0: cum_bc += b_kw / 60.0
-                    else: cum_bd += abs(b_kw) / 60.0
-
-                    if idx % 10 == 0 or idx == len(t_rows) - 1:
-                        ts_str = r["timestamp"]
-                        time_label = ts_str[11:16] if len(ts_str) >= 16 else ts_str
-                        if time_label != "00:00":
-                            results.append({
-                                "time": time_label,
-                                "solar": round(cum_solar, 2),
-                                "load": round(cum_load, 2),
-                                "gridImport": round(cum_gi, 2),
-                                "gridExport": round(cum_ge, 2),
-                                "batteryCharge": round(cum_bc, 2),
-                                "batteryDischarge": round(cum_bd, 2),
-                                "batteryLevel": r["battery_pct"]
-                            })
-                return results
-
-            # 3. Secondary Fallback: Smooth intraday curve up to end-of-day total from daily_totals
-            day_tot = query_daily_totals_for_day(date_str, inverter_id)
-            if day_tot:
-                results = []
-                tot_solar = day_tot.get("solar", 0.0)
-                tot_load = day_tot.get("load", 0.0)
-                tot_gi = day_tot.get("gridImport", 0.0)
-                tot_ge = day_tot.get("gridExport", 0.0)
-                tot_bc = day_tot.get("batteryCharge", 0.0)
-                tot_bd = day_tot.get("batteryDischarge", 0.0)
-
-                for m in range(0, 1440, 10):
-                    h = m // 60
-                    mn = m % 60
-                    time_label = f"{h:02d}:{mn:02d}"
-                    frac = min(1.0, m / 1430.0)
-
-                    results.append({
-                        "time": time_label,
-                        "solar": round(tot_solar * frac, 2),
-                        "load": round(tot_load * frac, 2),
-                        "gridImport": round(tot_gi * frac, 2),
-                        "gridExport": round(tot_ge * frac, 2),
-                        "batteryCharge": round(tot_bc * frac, 2),
-                        "batteryDischarge": round(tot_bd * frac, 2)
-                    })
-                return results
-
-            return []
-        finally:
-            conn.close()
-    except Exception as e:
-        logger.error(f"Error querying cumulative history: {e}")
-        return []
-
-
-def update_daily_totals_from_wire(date_str: Optional[str] = None):
-    """
-    Calculate and update current day's daily totals & 10-minute cumulative snapshots
-    directly from 1-minute live telemetry wire readings stored in telemetry_history.
-    """
-    try:
-        if not date_str:
-            date_str = datetime.now(PKT).strftime("%Y-%m-%d")
-
-        now_pkt = datetime.now(PKT)
-        ts_10m = now_pkt.strftime("%Y-%m-%d %H:%M:00")
-
-        conn = get_db_connection()
-        try:
-            for inv_id in ["all", "inv1", "inv2", "inv3"]:
-                t_rows = conn.execute("""
-                    SELECT solar_w, load_w, grid_w, battery_w
-                    FROM telemetry_history
-                    WHERE timestamp LIKE ? AND inverter_id = ?
-                    ORDER BY timestamp ASC
-                """, (f"{date_str}%", inv_id)).fetchall()
-
-                if not t_rows:
-                    continue
-
+                
+                # Accumulate energy using 1-minute power integration
                 cum_s, cum_l, cum_gi, cum_ge, cum_bc, cum_bd = 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
-                for r in t_rows:
+                total_count = len(t_rows)
+                
+                for idx, r in enumerate(t_rows):
                     s_kw = max(0.0, r["solar_w"] / 1000.0)
                     l_kw = max(0.0, r["load_w"] / 1000.0)
                     g_kw = r["grid_w"] / 1000.0
@@ -649,41 +752,265 @@ def update_daily_totals_from_wire(date_str: Optional[str] = None):
                     if b_kw > 0: cum_bc += b_kw / 60.0
                     else: cum_bd += abs(b_kw) / 60.0
 
-                s_kwh = round(cum_s, 2)
-                l_kwh = round(cum_l, 2)
-                gi_kwh = round(cum_gi, 2)
-                ge_kwh = round(cum_ge, 2)
-                bc_kwh = round(cum_bc, 2)
-                bd_kwh = round(cum_bd, 2)
+                    ts_str = r["timestamp"]
+                    time_label = ts_str[11:16] if len(ts_str) >= 16 else ts_str
+                    
+                    if time_label != "00:00":
+                        results.append({
+                            "time": time_label,
+                            "solar": round(cum_s, 2),
+                            "load": round(cum_l, 2),
+                            "gridImport": round(cum_gi, 2),
+                            "gridExport": round(cum_ge, 2),
+                            "batteryCharge": round(cum_bc, 2),
+                            "batteryDischarge": round(cum_bd, 2),
+                            "batteryLevel": r["battery_pct"]
+                        })
+                return results
 
-                # Upsert into daily_totals
-                conn.execute("""
-                    INSERT INTO daily_totals
-                    (date, inverter_id, solar_kwh, load_kwh, grid_import_kwh, grid_export_kwh, battery_charge_kwh, battery_discharge_kwh, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                    ON CONFLICT(date, inverter_id) DO UPDATE SET
-                        solar_kwh=excluded.solar_kwh,
-                        load_kwh=excluded.load_kwh,
-                        grid_import_kwh=excluded.grid_import_kwh,
-                        grid_export_kwh=excluded.grid_export_kwh,
-                        battery_charge_kwh=excluded.battery_charge_kwh,
-                        battery_discharge_kwh=excluded.battery_discharge_kwh,
-                        updated_at=CURRENT_TIMESTAMP
-                """, (date_str, inv_id, s_kwh, l_kwh, gi_kwh, ge_kwh, bc_kwh, bd_kwh))
+            # 3. If no 1-minute history yet, generate points up to current time ending at current daily total
+            now_pkt = datetime.now(PKT)
+            today_str = now_pkt.strftime("%Y-%m-%d")
+            
+            if date_str == today_str:
+                max_minutes = now_pkt.hour * 60 + now_pkt.minute + 1
+            else:
+                max_minutes = 1440
 
-                # Save 10-minute snapshot for cumulative graph
-                conn.execute("""
-                    INSERT OR REPLACE INTO cumulative_snapshots
-                    (timestamp, date, inverter_id, solar_kwh, load_kwh, grid_import_kwh, grid_export_kwh, battery_charge_kwh, battery_discharge_kwh)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (ts_10m, date_str, inv_id, s_kwh, l_kwh, gi_kwh, ge_kwh, bc_kwh, bd_kwh))
+            results = []
+            for m in range(0, max_minutes, 10):
+                h = m // 60
+                mn = m % 60
+                time_label = f"{h:02d}:{mn:02d}"
+                frac = min(1.0, m / max(1, max_minutes - 10))
 
-            conn.commit()
-            logger.info(f"Updated wire daily totals & 10-min cumulative snapshot for {date_str}")
+                results.append({
+                    "time": time_label,
+                    "solar": round(tot_solar * frac, 2),
+                    "load": round(tot_load * frac, 2),
+                    "gridImport": round(tot_gi * frac, 2),
+                    "gridExport": round(tot_ge * frac, 2),
+                    "batteryCharge": round(tot_bc * frac, 2),
+                    "batteryDischarge": round(tot_bd * frac, 2),
+                    "batteryLevel": 100
+                })
+
+            return results
         finally:
             conn.close()
     except Exception as e:
-        logger.error(f"Error updating daily totals from wire: {e}")
+        logger.error(f"Error querying cumulative history: {e}")
+        return []
 
 
+def update_hardware_daily_totals(inv_id: str, hw_totals: Dict[str, float]):
+    """
+    Updates the daily totals directly from the hardware's daily energy registers.
+    """
+    try:
+        now_pkt = datetime.now(PKT)
+        date_str = now_pkt.strftime("%Y-%m-%d")
+        ts_1m = now_pkt.strftime("%Y-%m-%d %H:%M:00")
+        
+        conn = get_db_connection()
+        try:
+            s_kwh = hw_totals.get('solar', 0.0)
+            l_kwh = hw_totals.get('load', 0.0)
+            gi_kwh = hw_totals.get('grid_import', 0.0)
+            ge_kwh = hw_totals.get('grid_export', 0.0)
+            bc_kwh = hw_totals.get('battery_charge', 0.0)
+            bd_kwh = hw_totals.get('battery_discharge', 0.0)
+            
+            # Fetch previous to prevent overwriting with 0 if hardware read failed
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT solar_kwh, load_kwh, grid_import_kwh, grid_export_kwh, battery_charge_kwh, battery_discharge_kwh
+                FROM daily_totals
+                WHERE date = ? AND inverter_id = ?
+            """, (date_str, inv_id))
+            prev = cursor.fetchone()
+            
+            if prev:
+                if s_kwh == 0.0: s_kwh = prev["solar_kwh"]
+                if l_kwh == 0.0: l_kwh = prev["load_kwh"]
+                if gi_kwh == 0.0: gi_kwh = prev["grid_import_kwh"]
+                if ge_kwh == 0.0: ge_kwh = prev["grid_export_kwh"]
+                if bc_kwh == 0.0: bc_kwh = prev["battery_charge_kwh"]
+                if bd_kwh == 0.0: bd_kwh = prev["battery_discharge_kwh"]
+
+            # Update daily_totals
+            conn.execute("""
+                INSERT OR REPLACE INTO daily_totals 
+                (date, inverter_id, solar_kwh, load_kwh, grid_import_kwh, grid_export_kwh, battery_charge_kwh, battery_discharge_kwh, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            """, (date_str, inv_id, s_kwh, l_kwh, gi_kwh, ge_kwh, bc_kwh, bd_kwh))
+            
+            # Save 1-minute snapshot for cumulative graph
+            conn.execute("""
+                INSERT OR REPLACE INTO cumulative_snapshots
+                (timestamp, date, inverter_id, solar_kwh, load_kwh, grid_import_kwh, grid_export_kwh, battery_charge_kwh, battery_discharge_kwh)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (ts_1m, date_str, inv_id, s_kwh, l_kwh, gi_kwh, ge_kwh, bc_kwh, bd_kwh))
+            
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.error(f"Error updating hardware daily totals: {e}")
+
+
+# --- AUTOMATION & TIMER DB FUNCTIONS ---
+
+def query_automations() -> List[Dict[str, Any]]:
+    """Retrieve all configured automations."""
+    try:
+        conn = get_db_connection()
+        try:
+            rows = conn.execute("""
+                SELECT id, name, time_of_day, inverter_id, enabled, actions, last_triggered, created_at
+                FROM automations
+                ORDER BY time_of_day ASC
+            """).fetchall()
+
+            res = []
+            for r in rows:
+                try:
+                    actions_list = json.loads(r["actions"])
+                except Exception:
+                    actions_list = []
+
+                res.append({
+                    "id": r["id"],
+                    "name": r["name"],
+                    "time_of_day": r["time_of_day"],
+                    "inverter_id": r["inverter_id"],
+                    "enabled": bool(r["enabled"]),
+                    "actions": actions_list,
+                    "last_triggered": r["last_triggered"],
+                    "created_at": r["created_at"]
+                })
+            return res
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.error(f"Error querying automations: {e}")
+        return []
+
+
+def save_automation(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Create or update an automation record."""
+    try:
+        conn = get_db_connection()
+        try:
+            auto_id = data.get("id") or f"auto_{int(datetime.now().timestamp()*1000)}"
+            name = data.get("name", "Scheduled Inverter Control")
+            time_of_day = data.get("time_of_day", "08:00")
+            inverter_id = data.get("inverter_id", "all")
+            enabled = 1 if data.get("enabled", True) else 0
+            actions = json.dumps(data.get("actions", []))
+
+            conn.execute("""
+                INSERT INTO automations (id, name, time_of_day, inverter_id, enabled, actions, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(id) DO UPDATE SET
+                    name=excluded.name,
+                    time_of_day=excluded.time_of_day,
+                    inverter_id=excluded.inverter_id,
+                    enabled=excluded.enabled,
+                    actions=excluded.actions
+            """, (auto_id, name, time_of_day, inverter_id, enabled, actions))
+
+            conn.commit()
+            logger.info(f"Saved automation {auto_id} ('{name}') for {time_of_day}")
+            return {
+                "id": auto_id,
+                "name": name,
+                "time_of_day": time_of_day,
+                "inverter_id": inverter_id,
+                "enabled": bool(enabled),
+                "actions": data.get("actions", [])
+            }
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.error(f"Error saving automation: {e}")
+        return None
+
+
+def delete_automation(auto_id: str) -> bool:
+    """Delete an automation record by ID."""
+    try:
+        conn = get_db_connection()
+        try:
+            conn.execute("DELETE FROM automations WHERE id = ?", (auto_id,))
+            conn.commit()
+            logger.info(f"Deleted automation {auto_id}")
+            return True
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.error(f"Error deleting automation: {e}")
+        return False
+
+
+def toggle_automation(auto_id: str) -> Optional[bool]:
+    """Toggle enabled status of an automation."""
+    try:
+        conn = get_db_connection()
+        try:
+            row = conn.execute("SELECT enabled FROM automations WHERE id = ?", (auto_id,)).fetchone()
+            if not row:
+                return None
+            new_state = 0 if row["enabled"] else 1
+            conn.execute("UPDATE automations SET enabled = ? WHERE id = ?", (new_state, auto_id))
+            conn.commit()
+            return bool(new_state)
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.error(f"Error toggling automation: {e}")
+        return None
+
+
+def get_due_automations(current_time_hhmm: str, current_date_str: str) -> List[Dict[str, Any]]:
+    """
+    Get enabled automations due at current_time_hhmm that haven't been triggered yet today.
+    """
+    try:
+        conn = get_db_connection()
+        try:
+            trigger_stamp = f"{current_date_str} {current_time_hhmm}"
+            rows = conn.execute("""
+                SELECT id, name, time_of_day, inverter_id, actions, last_triggered
+                FROM automations
+                WHERE enabled = 1 
+                  AND time_of_day = ? 
+                  AND (last_triggered IS NULL OR last_triggered != ?)
+            """, (current_time_hhmm, trigger_stamp)).fetchall()
+
+            due = []
+            for r in rows:
+                try:
+                    actions_list = json.loads(r["actions"])
+                except Exception:
+                    actions_list = []
+
+                due.append({
+                    "id": r["id"],
+                    "name": r["name"],
+                    "time_of_day": r["time_of_day"],
+                    "inverter_id": r["inverter_id"],
+                    "actions": actions_list
+                })
+
+                # Mark triggered stamp immediately
+                conn.execute("UPDATE automations SET last_triggered = ? WHERE id = ?", (trigger_stamp, r["id"]))
+
+            conn.commit()
+            return due
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.error(f"Error checking due automations: {e}")
+        return []
 

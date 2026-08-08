@@ -13,7 +13,8 @@ import {
   ArrowDownLeft,
   Battery as BatteryIcon,
   Maximize2,
-  Minimize2
+  Minimize2,
+  LineChart
 } from 'lucide-react';
 import { 
   ResponsiveContainer, 
@@ -389,35 +390,31 @@ export default function Graphs() {
       transition={{ duration: 0.4 }}
       className="graphs-page-container"
     >
-      {/* Mobile Header Portal: Inverter Selector + Connection Dot */}
+      {/* Mobile Top Header Portal Slot: Inverter Selector */}
       {headerSlot && createPortal(
-        <>
+        <InverterSelector 
+          selectedInverter={selectedInverter} 
+          onChange={handleInverterChange} 
+        />,
+        headerSlot
+      )}
+
+      {/* Desktop Header Panel */}
+      <div className="page-header glass-panel desktop-only" style={{ marginBottom: '16px' }}>
+        <div className="header-title-box">
+          <LineChart className="header-icon" size={24} />
+          <div>
+            <h2>Analytics & Power History</h2>
+            <p className="subtitle">Real-time telemetry power curves and historical totals</p>
+          </div>
+        </div>
+
+        <div className="header-controls">
           <InverterSelector 
             selectedInverter={selectedInverter} 
             onChange={handleInverterChange} 
           />
-          <div className={`conn-dot ${telemetry.isBackendOnline ? 'online' : 'offline'}`} />
-        </>,
-        headerSlot
-      )}
 
-      {/* Top Header & Timeframe Selector */}
-      <div className="graphs-header-row">
-        <div className="desktop-only">
-          <h2 className="page-title">Analytics & History</h2>
-          <p className="page-subtitle">Real 1-Minute SQLite Power Curves & DESS Scraped Totals</p>
-        </div>
-
-        <div className="timeframe-wrapper" style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
-          {/* Global Inverter Selector (desktop only) */}
-          <div className="desktop-only">
-            <InverterSelector 
-              selectedInverter={selectedInverter} 
-              onChange={handleInverterChange} 
-            />
-          </div>
-
-          {/* View Mode Selector (Daily / Monthly / Yearly) */}
           <div className="timeframe-pill-selector">
             <button 
               className={`timeframe-btn ${viewMode === 'daily' ? 'active' : ''}`}
@@ -444,6 +441,36 @@ export default function Graphs() {
               Yearly
             </button>
           </div>
+        </div>
+      </div>
+
+      {/* Mobile Timeframe Selector */}
+      <div className="mobile-only" style={{ marginBottom: '12px', justifyContent: 'center' }}>
+        <div className="timeframe-pill-selector">
+          <button 
+            className={`timeframe-btn ${viewMode === 'daily' ? 'active' : ''}`}
+            onClick={() => setViewMode('daily')}
+          >
+            Daily
+          </button>
+          <button 
+            className={`timeframe-btn ${viewMode === 'cumulative' ? 'active' : ''}`}
+            onClick={() => setViewMode('cumulative')}
+          >
+            Cumulative
+          </button>
+          <button 
+            className={`timeframe-btn ${viewMode === 'monthly' ? 'active' : ''}`}
+            onClick={() => setViewMode('monthly')}
+          >
+            Monthly
+          </button>
+          <button 
+            className={`timeframe-btn ${viewMode === 'yearly' ? 'active' : ''}`}
+            onClick={() => setViewMode('yearly')}
+          >
+            Yearly
+          </button>
         </div>
       </div>
 

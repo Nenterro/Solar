@@ -1,28 +1,22 @@
 import { Cpu } from 'lucide-react';
-import './InverterSelector.css';
+import UnifiedGlassDropdown from './UnifiedGlassDropdown';
 
 export const INVERTER_OPTIONS = [
-  { id: 'all', label: 'All Inverters' },
-  { id: 'inv1', label: 'Inverter 1' },
-  { id: 'inv2', label: 'Inverter 2' },
-  { id: 'inv3', label: 'Inverter 3' },
+  { value: 'all', label: 'All Inverters' },
+  { value: 'inv1', label: 'Inverter 1' },
+  { value: 'inv2', label: 'Inverter 2' },
+  { value: 'inv3', label: 'Inverter 3' },
 ];
 
 export default function InverterSelector({ selectedInverter, onChange }) {
   return (
-    <div className="inverter-selector-wrapper">
-      <Cpu size={16} className="inverter-selector-icon" />
-      <select 
-        value={selectedInverter} 
-        onChange={(e) => onChange(e.target.value)}
-        className="inverter-selector-dropdown"
-      >
-        {INVERTER_OPTIONS.map(opt => (
-          <option key={opt.id} value={opt.id} className="inverter-option">
-            {opt.label}
-          </option>
-        ))}
-      </select>
+    <div style={{ minWidth: '150px' }}>
+      <UnifiedGlassDropdown 
+        options={INVERTER_OPTIONS}
+        value={selectedInverter}
+        onChange={onChange}
+        icon={Cpu}
+      />
     </div>
   );
 }

@@ -160,3 +160,90 @@ body {
   .desktop-only { display: flex !important; }
   .mobile-only { display: none !important; }
 }
+
+/* =============================================
+   UNIFIED PAGE DESKTOP HEADER BAR DESIGN SYSTEM
+   ============================================= */
+.page-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 20px 28px;
+  border-radius: 16px;
+  background: rgba(30, 30, 40, 0.7);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3);
+  width: 100%;
+  box-sizing: border-box;
+  flex-shrink: 0;
+}
+
+.page-header .header-title-box {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.page-header .header-icon {
+  color: var(--accent-color, #f59e0b);
+  flex-shrink: 0;
+}
+
+.page-header .header-title-box h2 {
+  font-size: 1.4rem;
+  font-weight: 700;
+  margin: 0 0 4px 0;
+  color: #f8fafc;
+  line-height: 1.2;
+}
+
+.page-header .header-title-box .subtitle {
+  font-size: 0.85rem;
+  color: #94a3b8;
+  margin: 0;
+  line-height: 1.2;
+}
+
+.page-header .header-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+/* =============================================
+   UNIFIED PERFECT CIRCLE DOT DESIGN SYSTEM
+   ============================================= */
+.conn-dot,
+.status-dot,
+.live-dot,
+.status-indicator-dot,
+.dot {
+  width: 10px !important;
+  height: 10px !important;
+  min-width: 10px !important;
+  min-height: 10px !important;
+  max-width: 10px !important;
+  max-height: 10px !important;
+  border-radius: 50% !important;
+  flex-shrink: 0 !important;
+  aspect-ratio: 1 / 1 !important;
+  display: inline-block !important;
+  box-sizing: border-box !important;
+}
+
+.conn-dot.online, .status-dot.online {
+  background: #10b981 !important;
+  box-shadow: 0 0 10px #10b981 !important;
+}
+
+.conn-dot.offline, .status-dot.offline {
+  background: #f59e0b !important;
+  box-shadow: 0 0 10px #f59e0b !important;
+}
+
+.conn-dot.error, .status-dot.error {
+  background: #ef4444 !important;
+  box-shadow: 0 0 10px #ef4444 !important;
+}

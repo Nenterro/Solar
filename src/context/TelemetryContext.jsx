@@ -110,7 +110,7 @@ export function TelemetryProvider({ children }) {
     };
 
     fetchBackendTelemetry();
-    const interval = setInterval(fetchBackendTelemetry, 5000);
+    const interval = setInterval(fetchBackendTelemetry, 1000);
 
     return () => {
       isMounted = false;

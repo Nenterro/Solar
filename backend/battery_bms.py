@@ -6,6 +6,8 @@ import struct
 
 logger = logging.getLogger(__name__)
 
+fast_poll_active = False
+
 class BatteryBMS:
     def __init__(self, port="/dev/ttyUSB0", baudrate=9600):
         self.port = port
@@ -100,9 +102,14 @@ bms = BatteryBMS()
 
 def start_bms_poller():
     def poller():
+        global fast_poll_active
         while True:
+            poll_start = time.time()
             bms.poll_battery()
-            time.sleep(5)
+            
+            sleep_time = 1 if fast_poll_active else 60
+            elapsed = time.time() - poll_start
+            time.sleep(max(0.1, sleep_time - elapsed))
             
     t = threading.Thread(target=poller, daemon=True)
     t.start()

@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Outlet, NavLink, useLocation } from 'react-router-dom';
-import { LayoutDashboard, Sliders, LineChart, Database, Settings, Sun, Pin, PinOff, Battery, Power, MoreHorizontal } from 'lucide-react';
+import { LayoutDashboard, Sliders, LineChart, Database, Settings, Sun, Pin, PinOff, Battery, Power, MoreHorizontal, Clock } from 'lucide-react';
+import { useTelemetry } from '../context/TelemetryContext';
 import './Layout.css';
 
 const MAIN_NAV_ITEMS = [
@@ -9,9 +10,9 @@ const MAIN_NAV_ITEMS = [
   { path: '/grid', label: 'Grid', icon: Power },
   { path: '/graphs', label: 'Graphs', icon: LineChart },
   { path: '/data', label: 'Data', icon: Database },
+  { path: '/inverter-settings', label: 'Inverter Controls', icon: Sliders },
+  { path: '/automations', label: 'Automations', icon: Clock },
 ];
-
-const SETTINGS_ITEM = { path: '/settings', label: 'Settings', icon: Settings };
 
 // Mobile Nav Structure
 const MOBILE_MAIN_ITEMS = [
@@ -22,11 +23,12 @@ const MOBILE_MAIN_ITEMS = [
 ];
 
 const MOBILE_MORE_ITEMS = [
+  { path: '/inverter-settings', label: 'Inverter Controls', icon: Sliders },
+  { path: '/automations', label: 'Automations', icon: Clock },
   { path: '/data', label: 'Data', icon: Database },
-  { path: '/settings', label: 'Settings', icon: Settings },
 ];
 
-function Sidebar({ isPinned, togglePin }) {
+function Sidebar({ isPinned, togglePin, isBackendOnline }) {
   return (
     <div className={`sidebar-wrapper desktop-only ${isPinned ? 'pinned' : 'unpinned'}`}>
       <aside className={`sidebar glass-panel ${isPinned ? 'pinned' : 'unpinned'}`}>
@@ -54,13 +56,12 @@ function Sidebar({ isPinned, togglePin }) {
         </nav>
 
         <div className="sidebar-footer">
-          <NavLink 
-            to={SETTINGS_ITEM.path} 
-            className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
-          >
-            <SETTINGS_ITEM.icon size={20} />
-            <span className="nav-label">{SETTINGS_ITEM.label}</span>
-          </NavLink>
+          <div className="sidebar-status-card">
+            <div className={`conn-dot ${isBackendOnline ? 'online' : 'offline'}`} />
+            <span className="sidebar-status-text">
+              {isBackendOnline ? 'Backend Online' : 'Backend Offline'}
+            </span>
+          </div>
         </div>
       </aside>
     </div>
@@ -122,20 +123,27 @@ function BottomNav() {
 
 export default function Layout() {
   const [isSidebarPinned, setIsSidebarPinned] = useState(true);
+  const { telemetry } = useTelemetry() || { telemetry: {} };
+  const isBackendOnline = telemetry?.isBackendOnline ?? false;
   const location = useLocation();
   const isDashboard = location.pathname === '/';
 
   return (
     <div className="app-container">
-      <Sidebar isPinned={isSidebarPinned} togglePin={() => setIsSidebarPinned(!isSidebarPinned)} />
+      <Sidebar isPinned={isSidebarPinned} togglePin={() => setIsSidebarPinned(!isSidebarPinned)} isBackendOnline={isBackendOnline} />
       <div className="main-wrapper">
         <header className="mobile-only glass-panel mobile-top-bar">
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexShrink: 0 }}>
             <Sun size={24} style={{ color: 'var(--accent-color)' }} />
             <h1 style={{ fontSize: '1.1rem', fontWeight: '700' }}>Solar<span style={{ color: 'var(--accent-color)' }}>Dash</span></h1>
           </div>
-          {/* Portal target: Dashboard injects inverter selector + dot here */}
-          <div id="mobile-header-slot" style={{ display: 'flex', alignItems: 'center', gap: '10px' }} />
+          <div className="mobile-top-right-wrapper">
+            <div id="mobile-header-slot" />
+            <div 
+              className={`conn-dot ${isBackendOnline ? 'online' : 'offline'}`} 
+              title={isBackendOnline ? 'Backend Online' : 'Backend Offline'} 
+            />
+          </div>
         </header>
 
         <main className={`main-content ${isDashboard ? 'dashboard-active' : ''}`}>

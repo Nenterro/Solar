@@ -9,15 +9,17 @@ from fastapi.middleware.cors import CORSMiddleware
 
 import db
 from dess_scraper import dess_scraper
-from hid_reader import HIDInverterReader, INVERTERS_CONFIG
+from serial_reader import serial_reader, INVERTERS_CONFIG
 from battery_bms import bms, start_bms_poller
 
-hid_reader = HIDInverterReader()
+serial_reader_instance = serial_reader
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("SOLAR_SERVER")
 
 app = FastAPI(title="Solar Dashboard Backend Server", version="2.0")
+
+last_api_access_time = 0
 
 # CORS middleware for local & network access
 app.add_middleware(
@@ -30,33 +32,72 @@ app.add_middleware(
 
 # Background 1-minute telemetry logger thread
 def background_telemetry_loop():
-    logger.info("Starting background 1-minute telemetry logging thread...")
+    global last_api_access_time
+    logger.info("Starting background dynamic telemetry logging thread...")
     last_dess_poll_time = 0
+    last_db_log_time = 0
 
     while True:
         try:
-            # 1. Capture HID readings snapshot from local USB inverters
-            readings = hid_reader.poll_all_inverters()
-            if readings:
-                # Override glitchy inverter SOC with reliable RS485 BMS SOC
-                bms_data = bms.get_latest_data()
-                bms_soc = bms_data.get("soc", 0.0)
-                if bms_soc > 0:
-                    for inv_id in readings:
-                        readings[inv_id]["battery_capacity_pct"] = float(bms_soc)
-
-                db.log_telemetry_snapshot(readings)
-
-            # 2. Every 10 minutes (600 seconds), update daily totals & 10-minute cumulative snapshots directly from local wire telemetry!
             now_sec = time.time()
-            if now_sec - last_dess_poll_time >= 600:
+            user_connected = (now_sec - last_api_access_time) < 10
+            
+            import battery_bms
+            battery_bms.fast_poll_active = user_connected
+
+            if user_connected or (now_sec - last_db_log_time >= 60):
+                # 1. Capture RS232 telemetry snapshot from local USB inverters
+                readings = serial_reader_instance.poll_all_inverters()
+                if readings:
+                    # Override glitchy inverter SOC and voltage with reliable RS485 BMS data
+                    bms_data = bms.get_latest_data()
+                    bms_soc = bms_data.get("soc", 0.0)
+                    bms_v = bms_data.get("voltage", 0.0)
+                    if bms_soc > 0:
+                        for inv_id in readings:
+                            readings[inv_id]["battery_capacity_pct"] = float(bms_soc)
+                            if bms_v > 0:
+                                readings[inv_id]["battery_voltage"] = float(bms_v)
+
+                now_sec = time.time()
+                # Log to SQLite only once every 60 seconds to prevent DB bloat
+                if now_sec - last_db_log_time >= 60:
+                    last_db_log_time = now_sec
+                    db.log_telemetry_snapshot(readings)
+
+            # 2. Automatically poll hardware lifetime totals and calculate daily values
+            now_dt = datetime.now()
+            if now_dt.second >= 50 and (now_sec - last_dess_poll_time > 40):
                 last_dess_poll_time = now_sec
-                db.update_daily_totals_from_wire()
-                logger.info("Auto-updated current day daily totals & 10-min cumulative snapshots directly from local wire readings")
+                hw_totals_map = serial_reader_instance.poll_daily_totals()
+                if hw_totals_map:
+                    db.update_lifetime_totals_and_calculate_daily(hw_totals_map)
+                    logger.info("Updated hardware lifetime-based daily totals in SQLite")
+
+            # 3. Check for due automations (timers) every minute
+            now_pkt = datetime.now(db.PKT)
+            time_hhmm = now_pkt.strftime("%H:%M")
+            date_str = now_pkt.strftime("%Y-%m-%d")
+
+            due_automations = db.get_due_automations(time_hhmm, date_str)
+            if due_automations:
+                for auto in due_automations:
+                    logger.info(f"Triggering scheduled automation '{auto['name']}' ({auto['id']}) for inverter '{auto['inverter_id']}'")
+                    for action in auto.get("actions", []):
+                        cmd = action.get("command")
+                        if cmd:
+                            target_inv = auto.get("inverter_id", "all")
+                            if target_inv == "all":
+                                for inv_k in ["inv1", "inv2", "inv3"]:
+                                    res = serial_reader_instance.send_command(inv_k, cmd)
+                                    logger.info(f"Executed automation command {cmd} on {inv_k}: {res}")
+                            else:
+                                res = serial_reader_instance.send_command(target_inv, cmd)
+                                logger.info(f"Executed automation command {cmd} on {target_inv}: {res}")
 
         except Exception as e:
             logger.error(f"Error in background telemetry loop: {e}")
-        time.sleep(10)
+        time.sleep(1)
 
 # Start background thread on server startup
 @app.on_event("startup")
@@ -67,13 +108,13 @@ def startup_event():
 
 @app.get("/")
 def read_root():
-    readings = hid_reader.poll_all_inverters()
+    readings = serial_reader_instance.get_readings()
     return {
         "status": "online",
-        "service": "Solar Dashboard HID USB & DESS Backend",
+        "service": "Solar Dashboard RS232 USB Backend",
         "mapped_inverters_count": len(readings),
-        "hid_connected": hid_reader.is_connected,
-        "is_simulated": getattr(hid_reader, 'is_simulated', False)
+        "serial_connected": serial_reader_instance.is_connected,
+        "is_simulated": getattr(serial_reader_instance, 'is_simulated', False)
     }
 
 @app.get("/api/battery")
@@ -87,7 +128,7 @@ def get_battery():
     
     try:
         # Fallback to inverter aggregate telemetry for current and temperature
-        readings = hid_reader.readings_cache
+        readings = serial_reader_instance.readings_cache
         if readings:
             total_charge = sum(r.get("battery_charge_current", 0.0) for r in readings.values() if "battery_charge_current" in r)
             total_discharge = sum(r.get("battery_discharge_current", 0.0) for r in readings.values() if "battery_discharge_current" in r)
@@ -113,7 +154,9 @@ def get_battery():
 
 @app.get("/api/telemetry")
 def get_telemetry(inverter: str = Query("all")):
-    return hid_reader.get_telemetry_for_selection(inverter)
+    global last_api_access_time
+    last_api_access_time = time.time()
+    return serial_reader_instance.get_telemetry_for_selection(inverter)
 
 @app.get("/api/history")
 def get_history(
@@ -136,13 +179,10 @@ def get_cumulative(
 ):
     """
     Cumulative Intraday Graph Endpoint.
-    Queries 10-minute cumulative energy totals directly from DESSMonitor API.
-    Enforces strictly monotonic increase (values only go UP or stay flat).
+    Queries 10-minute cumulative energy totals directly from local SQLite DB.
     """
     target_date = date or datetime.now(db.PKT).strftime("%Y-%m-%d")
-    records = dess_scraper.fetch_cumulative_intraday_for_day(target_date, inverter)
-    if not records:
-        records = db.query_cumulative_history(target_date, inverter)
+    records = db.query_cumulative_history(target_date, inverter)
     return {
         "date": target_date,
         "inverter": inverter,
@@ -284,9 +324,42 @@ def reset_database():
         logger.error(f"Error purging database: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/api/inverter_settings")
+def get_inverter_settings(inverter: str = Query("inv3")):
+    """
+    Query current Inverter Settings:
+    1. Output source priority (POP)
+    2. Feed to grid (Grid export enable/disable PEb/PDb)
+    3. Charging source priority (PCP)
+    """
+    try:
+        settings = serial_reader_instance.get_inverter_settings(inverter)
+        return settings
+    except Exception as e:
+        logger.error(f"Error querying inverter settings: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/inverter_settings/update")
+def update_inverter_setting(payload: Dict[str, Any]):
+    """
+    Update Inverter Setting by sending command (e.g. POP01, PCP02, PEb, PDb).
+    Payload: {"inverter": "inv3", "command": "POP01"}
+    """
+    try:
+        inv_id = payload.get("inverter", "inv3")
+        cmd = payload.get("command")
+        if not cmd:
+            raise HTTPException(status_code=400, detail="Missing command parameter")
+        
+        res = serial_reader_instance.set_inverter_setting(inv_id, cmd)
+        return res
+    except Exception as e:
+        logger.error(f"Error updating inverter setting: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/api/devices")
 def get_devices():
-    device_map = getattr(hid_reader, 'device_map', {})
+    device_map = getattr(serial_reader_instance, 'device_map', {})
     return {
         "registered_inverters": INVERTERS_CONFIG,
         "mapped_devices_count": len(device_map),
@@ -294,8 +367,67 @@ def get_devices():
             {"id": inv_id, "path": path}
             for inv_id, path in device_map.items()
         ],
-        "active_device_connected": getattr(hid_reader, 'is_connected', True)
+        "active_device_connected": getattr(serial_reader_instance, 'is_connected', True)
     }
+
+# --- AUTOMATIONS & TIMERS API ENDPOINTS ---
+
+@app.get("/api/automations")
+def get_automations():
+    """List all configured automations."""
+    try:
+        autos = db.query_automations()
+        return {"automations": autos}
+    except Exception as e:
+        logger.error(f"Error fetching automations: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/automations")
+def create_automation(payload: Dict[str, Any]):
+    """Create a new automation."""
+    try:
+        saved = db.save_automation(payload)
+        if saved:
+            return {"success": True, "automation": saved}
+        raise HTTPException(status_code=400, detail="Failed to save automation")
+    except Exception as e:
+        logger.error(f"Error creating automation: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/api/automations/{auto_id}")
+def update_automation(auto_id: str, payload: Dict[str, Any]):
+    """Update an existing automation."""
+    try:
+        payload["id"] = auto_id
+        saved = db.save_automation(payload)
+        if saved:
+            return {"success": True, "automation": saved}
+        raise HTTPException(status_code=400, detail="Failed to update automation")
+    except Exception as e:
+        logger.error(f"Error updating automation: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/api/automations/{auto_id}")
+def delete_automation_endpoint(auto_id: str):
+    """Delete an automation."""
+    try:
+        ok = db.delete_automation(auto_id)
+        return {"success": ok}
+    except Exception as e:
+        logger.error(f"Error deleting automation: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/automations/{auto_id}/toggle")
+def toggle_automation_endpoint(auto_id: str):
+    """Toggle automation enabled/disabled status."""
+    try:
+        new_state = db.toggle_automation(auto_id)
+        if new_state is not None:
+            return {"success": True, "enabled": new_state}
+        raise HTTPException(status_code=404, detail="Automation not found")
+    except Exception as e:
+        logger.error(f"Error toggling automation: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn

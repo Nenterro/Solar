@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
+import { LayoutDashboard } from 'lucide-react';
 import EnergyFlowDiagram from '../components/EnergyFlowDiagram';
 import InverterSelector from '../components/InverterSelector';
 import { usePocketBase } from '../context/PocketBaseContext';
@@ -22,15 +23,12 @@ export default function Dashboard() {
     setHeaderSlot(document.getElementById('mobile-header-slot'));
   }, []);
 
-  // Portal: inject inverter selector + dot INTO the SolarDash mobile header
+  // Portal: inject inverter selector INTO the SolarDash mobile header
   const mobileHeaderControls = headerSlot ? createPortal(
-    <>
-      <InverterSelector 
-        selectedInverter={selectedInverter} 
-        onChange={handleInverterChange} 
-      />
-      <div className={`conn-dot ${telemetry.isBackendOnline ? 'online' : 'offline'}`} />
-    </>,
+    <InverterSelector 
+      selectedInverter={selectedInverter} 
+      onChange={handleInverterChange} 
+    />,
     headerSlot
   ) : null;
 
@@ -40,25 +38,22 @@ export default function Dashboard() {
       {mobileHeaderControls}
 
       {/* Desktop-only header */}
-      <div className="dashboard-header-row desktop-only">
-        <div>
-          <h2 className="dash-title">Solar Command Matrix</h2>
-          <p className="dash-subtitle">
-            Real-time Live Vector Flow {telemetry.connectedUrl && `(${telemetry.connectedUrl.includes('192.168') ? 'LAN' : telemetry.connectedUrl.includes('100.97') ? 'Tailscale' : 'DuckDNS'})`}
-          </p>
+      <div className="page-header glass-panel desktop-only">
+        <div className="header-title-box">
+          <LayoutDashboard className="header-icon" size={24} />
+          <div>
+            <h2>Solar Command Matrix</h2>
+            <p className="subtitle">
+              Real-time Live Vector Flow {telemetry.connectedUrl && `(${telemetry.connectedUrl.includes('192.168') ? 'LAN' : telemetry.connectedUrl.includes('100.97') ? 'Tailscale' : 'DuckDNS'})`}
+            </p>
+          </div>
         </div>
 
-        <div className="header-status-group">
+        <div className="header-controls">
           <InverterSelector 
             selectedInverter={selectedInverter} 
             onChange={handleInverterChange} 
           />
-          <div className="status-badge glass-panel">
-            <div className={`conn-dot ${telemetry.isBackendOnline ? 'online' : 'offline'}`} />
-            <span>
-              {telemetry.isBackendOnline ? 'Backend Connected' : 'Disconnected'}
-            </span>
-          </div>
         </div>
       </div>
 

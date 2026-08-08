@@ -108,7 +108,7 @@ export default function Battery() {
   };
 
   // Calculate circular progress dash array
-  const radius = 100;
+  const radius = 72;
   const circumference = 2 * Math.PI * radius;
   const strokeDashoffset = circumference - (data.soc / 100) * circumference;
   
@@ -121,28 +121,15 @@ export default function Battery() {
 
   const isError = data.status.includes('Error');
 
-  // Mobile Header Dot Portal
-  const mobileHeaderControls = headerSlot ? createPortal(
-    <div className={`status-badge glass-panel`} style={{ padding: '4px 12px' }}>
-      <div className="status-dot" style={{ backgroundColor: isError ? '#ef4444' : '#10b981', boxShadow: `0 0 8px ${isError ? '#ef4444' : '#10b981'}` }}></div>
-    </div>,
-    headerSlot
-  ) : null;
-
   return (
     <div className="battery-page">
-      {mobileHeaderControls}
-      <div className="battery-header glass-panel desktop-only">
-        <div className="title-wrapper">
-          <BatteryIcon size={32} style={{ color: getSocColor() }} />
+      <div className="page-header glass-panel desktop-only">
+        <div className="header-title-box">
+          <BatteryIcon className="header-icon" size={24} style={{ color: getSocColor() }} />
           <div>
-            <h1 className="page-title">Knox Powerwall</h1>
-            <p className="subtitle">Direct BMS Telemetry</p>
+            <h2>Knox Powerwall</h2>
+            <p className="subtitle">Direct BMS Telemetry & Voltage Limits</p>
           </div>
-        </div>
-        <div className={`status-badge ${isError ? 'error' : 'active'}`}>
-          <div className="status-dot"></div>
-          {data.status}
         </div>
       </div>
 
@@ -157,28 +144,28 @@ export default function Battery() {
             <div className="progress-ring-container desktop-only">
               <svg
                 className="progress-ring"
-                width="240"
-                height="240"
+                width="180"
+                height="180"
               >
                 <circle
                   className="progress-ring__circle-bg"
-                  strokeWidth="16"
+                  strokeWidth="12"
                   fill="transparent"
                   r={radius}
-                  cx="120"
-                  cy="120"
+                  cx="90"
+                  cy="90"
                 />
                 <circle
                   className="progress-ring__circle"
-                  strokeWidth="16"
+                  strokeWidth="12"
                   strokeDasharray={circumference}
                   strokeDashoffset={strokeDashoffset}
                   strokeLinecap="round"
                   stroke={getSocColor()}
                   fill="transparent"
                   r={radius}
-                  cx="120"
-                  cy="120"
+                  cx="90"
+                  cy="90"
                 />
               </svg>
               <div className="soc-text-container">
@@ -229,7 +216,7 @@ export default function Battery() {
           
           <div className="metric-card glass-panel">
             <div className="metric-icon" style={{ background: 'rgba(59, 130, 246, 0.1)', color: '#3b82f6' }}>
-              <Activity size={48} />
+              <Activity size={28} />
             </div>
             <div className="metric-info">
               <span className="metric-label">Voltage</span>
@@ -241,7 +228,7 @@ export default function Battery() {
 
           <div className="metric-card glass-panel">
             <div className="metric-icon" style={{ background: 'rgba(239, 68, 68, 0.1)', color: '#ef4444' }}>
-              <Activity size={48} />
+              <Activity size={28} />
             </div>
             <div className="metric-info">
               <span className="metric-label">Current</span>
@@ -253,7 +240,7 @@ export default function Battery() {
 
           <div className="metric-card glass-panel">
             <div className="metric-icon" style={{ background: 'rgba(245, 158, 11, 0.1)', color: '#f59e0b' }}>
-              <Zap size={48} />
+              <Zap size={28} />
             </div>
             <div className="metric-info">
               <span className="metric-label">Power Flow</span>
@@ -265,7 +252,7 @@ export default function Battery() {
 
           <div className="metric-card glass-panel">
             <div className="metric-icon" style={{ background: 'rgba(16, 185, 129, 0.1)', color: '#10b981' }}>
-              <Thermometer size={48} />
+              <Thermometer size={28} />
             </div>
             <div className="metric-info">
               <span className="metric-label">Temperature</span>

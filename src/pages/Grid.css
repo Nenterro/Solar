@@ -185,12 +185,18 @@
   transition: all 0.3s ease;
 }
 
-.timeline-segment.active {
+.timeline-segment.active,
+.timeline-segment.online {
   background: #10b981; /* Green for Grid Active */
 }
 
-.timeline-segment.inactive {
+.timeline-segment.inactive,
+.timeline-segment.offline {
   background: #ef4444; /* Red for Load Shedding */
+}
+
+.timeline-segment.nodata {
+  background: rgba(255, 255, 255, 0.08); /* Dim Grey for Unrecorded / Server Offline */
 }
 
 .timeline-labels {
