@@ -37,9 +37,9 @@ const AVAILABLE_SETTING_TYPES = [
     { label: 'SBU', cmd: 'POP02' }
   ]},
   { id: 'charger_priority', label: 'Charging Source Priority', icon: BatteryCharging, type: 'select', options: [
-    { label: 'CSO', cmd: 'PCP01' },
-    { label: 'SNU', cmd: 'PCP02' },
-    { label: 'OSO', cmd: 'PCP03' }
+    { label: 'Solar First', cmd: 'PCP01' },
+    { label: 'Solar and Utility', cmd: 'PCP02' },
+    { label: 'Solar Only', cmd: 'PCP03' }
   ]},
   { id: 'turn_off_ac2', label: 'Turn Off AC2 Voltage', icon: Zap, type: 'number', prefix: 'PAC2OFF', defaultVal: '56.5', unit: 'V' },
   { id: 'turn_on_ac2', label: 'Turn On AC2 Voltage', icon: Zap, type: 'number', prefix: 'PAC2ON', defaultVal: '57.0', unit: 'V' },

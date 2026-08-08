@@ -468,7 +468,7 @@ class SerialInverterReader:
                     feed_enabled = 'd' in e_part
 
                 out_labels = {'0': 'USB', '1': 'SUB', '2': 'SBU'}
-                charger_labels = {'1': 'CSO', '2': 'SNU', '3': 'OSO'}
+                charger_labels = {'1': 'Solar First', '2': 'Solar and Utility', '3': 'Solar Only'}
 
                 return {
                     "inverter_id": inverter_id,
@@ -487,9 +487,9 @@ class SerialInverterReader:
                         "code": charger_code,
                         "label": charger_labels.get(charger_code, f"Unknown ({charger_code})"),
                         "options": [
-                            {"code": "1", "label": "CSO", "cmd": "PCP01"},
-                            {"code": "2", "label": "SNU", "cmd": "PCP02"},
-                            {"code": "3", "label": "OSO", "cmd": "PCP03"}
+                            {"code": "1", "label": "Solar First", "cmd": "PCP01"},
+                            {"code": "2", "label": "Solar and Utility", "cmd": "PCP02"},
+                            {"code": "3", "label": "Solar Only", "cmd": "PCP03"}
                         ]
                     },
                     "feed_to_grid": {
