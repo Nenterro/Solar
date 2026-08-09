@@ -41,8 +41,6 @@ const AVAILABLE_SETTING_TYPES = [
     { label: 'Solar and Utility', cmd: 'PCP02' },
     { label: 'Solar Only', cmd: 'PCP03' }
   ]},
-  { id: 'turn_off_ac2', label: 'Turn Off AC2 Voltage', icon: Zap, type: 'number', prefix: 'PAC2OFF', defaultVal: '56.5', unit: 'V' },
-  { id: 'turn_on_ac2', label: 'Turn On AC2 Voltage', icon: Zap, type: 'number', prefix: 'PAC2ON', defaultVal: '57.0', unit: 'V' },
   { id: 'back_to_grid', label: 'Back to Grid Voltage', icon: ShieldAlert, type: 'number', prefix: 'PBCV', defaultVal: '52.0', unit: 'V' },
   { id: 'back_to_discharge', label: 'Back to Discharge Voltage', icon: ShieldAlert, type: 'number', prefix: 'PBDV', defaultVal: '54.0', unit: 'V' },
   { id: 'cut_off_v', label: 'Low Battery Cut-Off Voltage', icon: ShieldAlert, type: 'number', prefix: 'PSDV', defaultVal: '46.0', unit: 'V' },

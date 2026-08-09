@@ -467,15 +467,6 @@ class SerialInverterReader:
                         e_part = qflag_resp[1:]
                     feed_enabled = 'd' in e_part
 
-                default_ac2_off = 52.0 if inverter_id in ('inv1', '1') else 56.6
-                default_ac2_on = 57.0
-
-                v_back_grid = db.get_inverter_setting_override(inverter_id, "back_to_grid_voltage", v_back_grid)
-                v_back_disch = db.get_inverter_setting_override(inverter_id, "back_to_discharge_voltage", v_back_disch)
-                v_cutoff = db.get_inverter_setting_override(inverter_id, "battery_cut_off_voltage", v_cutoff)
-                v_ac2_off = db.get_inverter_setting_override(inverter_id, "battery_voltage_turn_off_ac2", default_ac2_off)
-                v_ac2_on = db.get_inverter_setting_override(inverter_id, "battery_voltage_turn_on_ac2", default_ac2_on)
-
                 out_labels = {'0': 'USB', '1': 'SUB', '2': 'SBU'}
                 charger_labels = {'1': 'Solar First', '2': 'Solar and Utility', '3': 'Solar Only'}
 
@@ -523,16 +514,6 @@ class SerialInverterReader:
                             "unit": "V",
                             "set_cmd_prefix": "PSDV"
                         },
-                        "battery_voltage_turn_off_ac2": {
-                            "value": v_ac2_off,
-                            "unit": "V",
-                            "set_cmd_prefix": "PAC2OFF"
-                        },
-                        "battery_voltage_turn_on_ac2": {
-                            "value": v_ac2_on,
-                            "unit": "V",
-                            "set_cmd_prefix": "PAC2ON"
-                        },
                         "bulk_charging_voltage": {
                             "value": v_bulk,
                             "unit": "V",
@@ -550,27 +531,7 @@ class SerialInverterReader:
                 return {"error": str(e)}
 
     def set_inverter_setting(self, inverter_id: str, command: str) -> Dict[str, Any]:
-        """Send a configuration setting command to an inverter (e.g. POP01, PCP02, PEb, PDb, PAC2OFF56.6)."""
-        # Save setting override in SQLite DB
-        try:
-            if command.startswith("PAC2OFF"):
-                val = float(command[7:])
-                db.save_inverter_setting_override(inverter_id, "battery_voltage_turn_off_ac2", val)
-            elif command.startswith("PAC2ON"):
-                val = float(command[6:])
-                db.save_inverter_setting_override(inverter_id, "battery_voltage_turn_on_ac2", val)
-            elif command.startswith("PBCV"):
-                val = float(command[4:])
-                db.save_inverter_setting_override(inverter_id, "back_to_grid_voltage", val)
-            elif command.startswith("PBDV"):
-                val = float(command[4:])
-                db.save_inverter_setting_override(inverter_id, "back_to_discharge_voltage", val)
-            elif command.startswith("PSDV"):
-                val = float(command[4:])
-                db.save_inverter_setting_override(inverter_id, "battery_cut_off_voltage", val)
-        except Exception as e:
-            logger.warning(f"Failed to parse override value from {command}: {e}")
-
+        """Send a configuration setting command to an inverter (e.g. POP01, PCP02, PEd, PDd, PBCV52.0)."""
         if not self.device_map:
             self.poll_serial_ports()
 

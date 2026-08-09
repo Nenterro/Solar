@@ -405,70 +405,7 @@ export default function InverterSettings() {
 
           </div>
 
-          {/* Row 3: AC2 Smart Load Voltage Thresholds */}
-          <div className="settings-card glass-panel full-width">
-            <div className="card-header">
-              <Zap size={20} className="card-icon ac2" />
-              <h3>Dual AC Output (AC2 / Smart Load) Voltage Thresholds</h3>
-            </div>
-            <p className="card-desc">
-              Battery voltage limits for secondary AC output (AC2).
-            </p>
-            
-            <div className="voltage-thresholds-grid two-cols ac2-rows-mobile">
-              <div className="voltage-input-card">
-                <div className="vol-title-box">
-                  <span className="vol-title">Turn Off AC2 Voltage</span>
-                  <span className="vol-sub">Cut off threshold for AC2 load</span>
-                </div>
-                <div className="vol-input-group">
-                  <input
-                    type="number"
-                    step="0.1"
-                    className="vol-input"
-                    value={voltageForm.battery_voltage_turn_off_ac2}
-                    onChange={(e) => setVoltageForm({ ...voltageForm, battery_voltage_turn_off_ac2: e.target.value })}
-                  />
-                  <span className="vol-unit">V</span>
-                  <button 
-                    className="apply-btn"
-                    onClick={() => handleVoltageApply('battery_voltage_turn_off_ac2', 'PAC2OFF', 'Turn Off AC2 Voltage')}
-                    disabled={isSaving}
-                  >
-                    <Save size={14} />
-                    <span>Set</span>
-                  </button>
-                </div>
-              </div>
-
-              <div className="voltage-input-card">
-                <div className="vol-title-box">
-                  <span className="vol-title">Turn On AC2 Voltage</span>
-                  <span className="vol-sub">Reconnect threshold for AC2 load</span>
-                </div>
-                <div className="vol-input-group">
-                  <input
-                    type="number"
-                    step="0.1"
-                    className="vol-input"
-                    value={voltageForm.battery_voltage_turn_on_ac2}
-                    onChange={(e) => setVoltageForm({ ...voltageForm, battery_voltage_turn_on_ac2: e.target.value })}
-                  />
-                  <span className="vol-unit">V</span>
-                  <button 
-                    className="apply-btn"
-                    onClick={() => handleVoltageApply('battery_voltage_turn_on_ac2', 'PAC2ON', 'Turn On AC2 Voltage')}
-                    disabled={isSaving}
-                  >
-                    <Save size={14} />
-                    <span>Set</span>
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* Row 4: System Battery & Grid Thresholds (Full Width Card) */}
+          {/* Row 3: System Battery & Grid Thresholds (Full Width Card) */}
           <div className="settings-card glass-panel full-width">
             <div className="card-header">
               <ShieldAlert size={20} className="card-icon battery-v" />
