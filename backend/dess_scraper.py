@@ -60,6 +60,39 @@ class DESSMonitorScraper:
             logger.error(f"DESSMonitor login exception: {e}")
             return False
 
+    def query_device_ctrl_value(self, inverter_id: str, ctrl_id: str = "bse_battery_voltage_time_turnoff") -> Optional[float]:
+        """
+        Query a device control parameter value from DESSMonitor API (e.g. bse_battery_voltage_time_turnoff).
+        """
+        try:
+            if not self.token:
+                if not self.login():
+                    return None
+
+            dev = next((d for d in INVERTER_DEVICES if d["id"] == inverter_id), None)
+            if not dev:
+                return None
+
+            salt = str(int(time.time() * 1000))
+            q = f"&action=queryDeviceCtrlValue&source=1&i18n=en_US&pn={dev['pn']}&devcode=6443&devaddr=1&sn={dev['sn']}&id={ctrl_id}"
+            sig = self._sha1(f"{salt}{self.secret}{self.token}{q}")
+            p = {
+                "sign": sig, "salt": salt, "token": self.token,
+                "action": "queryDeviceCtrlValue", "source": "1", "i18n": "en_US",
+                "pn": dev["pn"], "devcode": "6443", "devaddr": "1", "sn": dev["sn"],
+                "id": ctrl_id
+            }
+
+            resp = self.session.get(DESS_BASE, params=p, timeout=15).json()
+            if resp.get("err") == 0 and "dat" in resp:
+                dat = resp["dat"]
+                if isinstance(dat, dict) and "val" in dat:
+                    return float(dat["val"])
+            return None
+        except Exception as e:
+            logger.warning(f"Failed to query DESS ctrl {ctrl_id} for {inverter_id}: {e}")
+            return None
+
     def _fetch_daily_totals_for_day(self, sn: str, pn: str, date_str: str) -> Optional[Dict[str, float]]:
         """Fetch data for a single day using the reliable queryDeviceDataOneDay action."""
         salt = str(int(time.time() * 1000))
