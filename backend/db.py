@@ -95,6 +95,16 @@ def init_db():
         """)
 
         cursor.execute("""
+            CREATE TABLE IF NOT EXISTS inverter_settings_store (
+                inverter_id TEXT NOT NULL,
+                setting_key TEXT NOT NULL,
+                setting_val REAL NOT NULL,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (inverter_id, setting_key)
+            )
+        """)
+
+        cursor.execute("""
             CREATE INDEX IF NOT EXISTS idx_telemetry_time_inv 
             ON telemetry_history (timestamp, inverter_id)
         """)
@@ -1011,6 +1021,43 @@ def get_due_automations(current_time_hhmm: str, current_date_str: str) -> List[D
         finally:
             conn.close()
     except Exception as e:
-        logger.error(f"Error checking due automations: {e}")
+        logger.error(f"Error getting due automations: {e}")
         return []
 
+
+def save_inverter_setting_override(inverter_id: str, setting_key: str, setting_val: float):
+    """Save/update a voltage setting override in SQLite DB."""
+    try:
+        conn = get_db_connection()
+        try:
+            conn.execute("""
+                INSERT INTO inverter_settings_store (inverter_id, setting_key, setting_val, updated_at)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(inverter_id, setting_key) DO UPDATE SET
+                    setting_val=excluded.setting_val,
+                    updated_at=CURRENT_TIMESTAMP
+            """, (inverter_id, setting_key, float(setting_val)))
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.error(f"Error saving setting override for {inverter_id} ({setting_key}): {e}")
+
+
+def get_inverter_setting_override(inverter_id: str, setting_key: str, default_val: float) -> float:
+    """Retrieve saved voltage setting override from SQLite DB or return default_val."""
+    try:
+        conn = get_db_connection()
+        try:
+            row = conn.execute("""
+                SELECT setting_val FROM inverter_settings_store
+                WHERE inverter_id = ? AND setting_key = ?
+            """, (inverter_id, setting_key)).fetchone()
+            if row and row["setting_val"] is not None:
+                return float(row["setting_val"])
+            return default_val
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.error(f"Error getting setting override for {inverter_id} ({setting_key}): {e}")
+        return default_val
