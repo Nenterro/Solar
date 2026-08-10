@@ -31,7 +31,7 @@ class BatteryBMS:
         
     def poll_battery(self):
         """
-        Polls the Knox Powerwall battery over RS485. 
+        Polls the Knox Powerwall battery over RS485 with up to 3 retries.
         Uses raw pyserial because the Knox BMS has a Modbus RTU bug 
         where it returns the register count instead of byte count in the header.
         """
@@ -48,61 +48,55 @@ class BatteryBMS:
                         for _ in range(8):
                             crc = (crc >> 1) ^ 0xA001 if crc & 1 else crc >> 1
                     
-                    s.write(req + struct.pack('<H', crc))
-                    time.sleep(0.3)
-                    res = s.read(1024)
-                    
-                    if len(res) >= 20 and res[0] == 0x01 and res[1] == 0x03:
-                        # Extract data
-                        # Index 4,5 is Reg 50 (Voltage)
-                        voltage_raw = struct.unpack('>H', res[4:6])[0]
-                        voltage = voltage_raw / 10.0
-                        
-                        # Index 6,7 is Reg 51 (SOC)
-                        soc_raw = struct.unpack('>H', res[6:8])[0]
-                        
-                        # Index 8,9,10,11 is Reg 52/53 (Capacity in mAh)
-                        capacity_raw = struct.unpack('>I', res[8:12])[0]
-                        capacity_ah = capacity_raw / 1000.0
-                        
-                        # Index 12,13 is Reg 54 (Current)
-                        current_raw = struct.unpack('>h', res[12:14])[0]
-                        current = current_raw / 10.0 # Standard is 10.0
-                        
-                        # Strict Bounds Validation for Knox BMS RS485 Response
-                        if soc_raw > 100 or soc_raw < 0:
-                            logger.warning(f"RS485 BMS returned invalid SOC ({soc_raw}%), ignoring frame.")
-                            self.latest_data["status"] = f"Corrupted Frame (SOC {soc_raw}%)"
-                            return
+                    full_cmd = req + struct.pack('<H', crc)
 
-                        if voltage > 70.0 or voltage < 35.0:
-                            logger.warning(f"RS485 BMS returned invalid Voltage ({voltage}V), ignoring frame.")
-                            self.latest_data["status"] = f"Corrupted Frame (Voltage {voltage}V)"
-                            return
+                    for attempt in range(3):
+                        s.reset_input_buffer()
+                        s.write(full_cmd)
+                        time.sleep(0.2)
+                        res = s.read(1024)
 
-                        power = voltage * current
-                        
-                        self.latest_data["soc"] = int(soc_raw)
-                        self.latest_data["voltage"] = voltage
-                        self.latest_data["capacity_ah"] = capacity_ah
-                        self.latest_data["current"] = current
-                        self.latest_data["power"] = round(power, 2)
-                        
-                        self.last_valid_soc = int(soc_raw)
-                        self.last_valid_voltage = voltage
-                        
-                        if current > 0.5:
-                            self.latest_data["state"] = "Charging"
-                        elif current < -0.5:
-                            self.latest_data["state"] = "Discharging"
-                        else:
-                            self.latest_data["state"] = "Idle"
+                        if len(res) >= 20 and res[0] == 0x01 and res[1] == 0x03:
+                            # Extract data
+                            voltage_raw = struct.unpack('>H', res[4:6])[0]
+                            voltage = voltage_raw / 10.0
+                            soc_raw = struct.unpack('>H', res[6:8])[0]
+                            capacity_raw = struct.unpack('>I', res[8:12])[0]
+                            capacity_ah = capacity_raw / 1000.0
+                            current_raw = struct.unpack('>h', res[12:14])[0]
+                            current = current_raw / 10.0
+
+                            # Strict Bounds Validation for Knox BMS RS485 Response
+                            if soc_raw > 100 or soc_raw < 0 or voltage > 70.0 or voltage < 35.0:
+                                logger.warning(f"BMS RS485 attempt {attempt+1} invalid: SOC={soc_raw}%, V={voltage}V. Retrying...")
+                                time.sleep(0.15)
+                                continue
+
+                            power = voltage * current
+                            self.latest_data["soc"] = int(soc_raw)
+                            self.latest_data["voltage"] = voltage
+                            self.latest_data["capacity_ah"] = capacity_ah
+                            self.latest_data["current"] = current
+                            self.latest_data["power"] = round(power, 2)
                             
-                        self.latest_data["status"] = "Connected"
-                        self.latest_data["last_updated"] = time.time()
-                    else:
-                        self.latest_data["status"] = "No Data / Invalid Response"
-                        
+                            self.last_valid_soc = int(soc_raw)
+                            self.last_valid_voltage = voltage
+                            
+                            if current > 0.5:
+                                self.latest_data["state"] = "Charging"
+                            elif current < -0.5:
+                                self.latest_data["state"] = "Discharging"
+                            else:
+                                self.latest_data["state"] = "Idle"
+                                
+                            self.latest_data["status"] = "Connected"
+                            self.latest_data["last_updated"] = time.time()
+                            return # Successful poll
+                        else:
+                            time.sleep(0.15)
+
+                    self.latest_data["status"] = "No Data / Invalid Response"
+
                 finally:
                     s.close()
             except Exception as e:
