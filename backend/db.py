@@ -148,6 +148,84 @@ def nuke_db():
         return False
 
 
+def clean_deviated_telemetry_points() -> int:
+    """
+    Purge and sanitize all historical deviated points in telemetry_history:
+    1. Zero out phantom grid power when grid_v < 90V or residual grid power < 80W.
+    2. Delete absurd outlier rows (>100kW, SOC > 100%, battery_v > 70V).
+    3. Standardize inv1, inv2, inv3 SOC and battery voltage to match the Knox BMS RS485 'all' row for every timestamp.
+    4. Smooth out transient single-minute SOC dips/spikes (> 5% jump in 1 minute).
+    """
+    try:
+        conn = get_db_connection()
+        try:
+            modified_count = 0
+
+            # 1. Zero out phantom grid power during load shedding / off-grid
+            cur1 = conn.execute("UPDATE telemetry_history SET grid_w = 0.0 WHERE grid_v < 90.0 OR ABS(grid_w) < 80.0")
+            modified_count += cur1.rowcount
+
+            # 2. Delete corrupt outlier rows
+            cur2 = conn.execute("""
+                DELETE FROM telemetry_history 
+                WHERE ABS(solar_w) > 100000 OR ABS(load_w) > 100000 OR ABS(grid_w) > 100000 
+                   OR ABS(battery_w) > 100000 OR battery_pct > 100.0 OR battery_pct < 0.0 OR battery_v > 70.0
+            """)
+            modified_count += cur2.rowcount
+
+            # 3. Synchronize inv1, inv2, inv3 SOC and battery_v to Knox BMS RS485 'all' rows
+            conn.execute("""
+                UPDATE telemetry_history 
+                SET battery_pct = (
+                    SELECT b.battery_pct 
+                    FROM telemetry_history b 
+                    WHERE b.timestamp = telemetry_history.timestamp AND b.inverter_id = 'all' AND b.battery_pct > 0
+                    LIMIT 1
+                ),
+                battery_v = (
+                    SELECT b.battery_v 
+                    FROM telemetry_history b 
+                    WHERE b.timestamp = telemetry_history.timestamp AND b.inverter_id = 'all' AND b.battery_v > 0
+                    LIMIT 1
+                )
+                WHERE inverter_id IN ('inv1', 'inv2', 'inv3')
+                  AND EXISTS (
+                    SELECT 1 FROM telemetry_history b 
+                    WHERE b.timestamp = telemetry_history.timestamp AND b.inverter_id = 'all' AND b.battery_pct > 0
+                  )
+            """)
+
+            # 4. Smooth out single-minute SOC dips/spikes in 'all' rows
+            rows = conn.execute("""
+                SELECT id, battery_pct 
+                FROM telemetry_history 
+                WHERE inverter_id = 'all' 
+                ORDER BY timestamp ASC
+            """).fetchall()
+
+            last_valid_soc = None
+            to_update = []
+            for r in rows:
+                soc = r["battery_pct"]
+                if last_valid_soc is not None and abs(soc - last_valid_soc) > 5.0:
+                    to_update.append((last_valid_soc, r["id"]))
+                else:
+                    if soc > 0:
+                        last_valid_soc = soc
+
+            for smooth_soc, row_id in to_update:
+                conn.execute("UPDATE telemetry_history SET battery_pct = ? WHERE id = ?", (smooth_soc, row_id))
+
+            conn.commit()
+            logger.info(f"Cleaned {modified_count + len(to_update)} deviated telemetry history points from SQLite DB.")
+            return modified_count + len(to_update)
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.error(f"Error cleaning deviated telemetry points: {e}")
+        return 0
+
+
 def reset_db_history():
     """Purge all old telemetry history and daily totals from database."""
     return nuke_db()
