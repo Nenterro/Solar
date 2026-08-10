@@ -49,15 +49,15 @@ def background_telemetry_loop():
                 # 1. Capture RS232 telemetry snapshot from local USB inverters
                 readings = serial_reader_instance.poll_all_inverters()
                 if readings:
-                    # Override glitchy inverter SOC and voltage with reliable RS485 BMS data
+                    # ALWAYS override inverter SOC and voltage with reliable RS485 BMS data (zero fallback to inverter)
                     bms_data = bms.get_latest_data()
                     bms_soc = float(bms_data.get("soc", 0.0))
                     bms_v = float(bms_data.get("voltage", 0.0))
-                    if 0.0 <= bms_soc <= 100.0 and bms_soc > 0:
-                        for inv_id in readings:
+                    for inv_id in readings:
+                        if 0.0 <= bms_soc <= 100.0 and bms_soc > 0:
                             readings[inv_id]["battery_capacity_pct"] = bms_soc
-                            if 35.0 <= bms_v <= 70.0:
-                                readings[inv_id]["battery_voltage"] = bms_v
+                        if 35.0 <= bms_v <= 70.0:
+                            readings[inv_id]["battery_voltage"] = bms_v
 
                 now_sec = time.time()
                 # Log to SQLite only once every 60 seconds to prevent DB bloat

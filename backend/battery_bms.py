@@ -26,6 +26,8 @@ class BatteryBMS:
             "last_updated": None,
             "status": "Disconnected"
         }
+        self.last_valid_soc = None
+        self.last_valid_voltage = None
         
     def poll_battery(self):
         """
@@ -86,6 +88,9 @@ class BatteryBMS:
                         self.latest_data["current"] = current
                         self.latest_data["power"] = round(power, 2)
                         
+                        self.last_valid_soc = int(soc_raw)
+                        self.last_valid_voltage = voltage
+                        
                         if current > 0.5:
                             self.latest_data["state"] = "Charging"
                         elif current < -0.5:
@@ -106,7 +111,13 @@ class BatteryBMS:
 
     def get_latest_data(self):
         with self.lock:
-            return self.latest_data.copy()
+            data = self.latest_data.copy()
+            if (data.get("soc", 0) == 0 or data.get("voltage", 0.0) == 0.0):
+                if self.last_valid_soc is not None:
+                    data["soc"] = self.last_valid_soc
+                if self.last_valid_voltage is not None:
+                    data["voltage"] = self.last_valid_voltage
+            return data
 
 bms = BatteryBMS()
 
