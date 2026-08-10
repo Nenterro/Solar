@@ -416,6 +416,9 @@ class SerialInverterReader:
         if not port:
             return {"error": f"Inverter '{inverter_id}' not connected"}
 
+        qpiri_resp = ""
+        qflag_resp = ""
+
         with self.serial_lock:
             try:
                 ser = serial.Serial(port, 2400, timeout=1.5)
@@ -435,118 +438,118 @@ class SerialInverterReader:
                 qflag_resp = ser.read_until(b'\r', size=150).decode('ascii', errors='ignore').strip()
 
                 ser.close()
+            except Exception as e:
+                logger.error(f"Error querying serial port {port} for {inverter_id}: {e}")
+                return {"error": str(e)}
 
-                out_code = "0"
-                charger_code = "0"
-                machine_type = "0"
-                feed_enabled = False
-                
-                v_back_grid = 52.0
-                v_cutoff = 46.0
-                v_bulk = 57.6
-                v_float = 57.0
-                v_back_disch = 54.0
+        out_code = "0"
+        charger_code = "0"
+        machine_type = "0"
+        feed_enabled = False
+        
+        v_back_grid = 52.0
+        v_cutoff = 46.0
+        v_bulk = 57.6
+        v_float = 57.0
+        v_back_disch = 54.0
 
-                if qpiri_resp.startswith('('):
-                    parts = qpiri_resp[1:].split()
-                    if len(parts) >= 23:
-                        machine_type = parts[12]
-                        out_code = parts[16]
-                        charger_code = parts[17]
-                        try:
-                            v_back_grid = float(parts[8])
-                            v_cutoff = float(parts[9])
-                            v_bulk = float(parts[10])
-                            v_float = float(parts[11])
-                            v_back_disch = float(parts[22])
-                        except Exception:
-                            pass
-
-                # Parse Flag 'd' in QFLAG for Feed to Grid enable/disable
-                if qflag_resp.startswith('('):
-                    if 'D' in qflag_resp:
-                        e_part = qflag_resp[1:].split('D')[0]
-                    else:
-                        e_part = qflag_resp[1:]
-                    feed_enabled = 'd' in e_part
-
-                # Query DESS Monitor API for live AC2 turn-off voltage setting
-                v_ac2_off = None
+        if qpiri_resp.startswith('('):
+            parts = qpiri_resp[1:].split()
+            if len(parts) >= 23:
+                machine_type = parts[12]
+                out_code = parts[16]
+                charger_code = parts[17]
                 try:
-                    from dess_scraper import dess_scraper
-                    v_ac2_off = dess_scraper.query_device_ctrl_value(inverter_id, "bse_battery_voltage_time_turnoff")
+                    v_back_grid = float(parts[8])
+                    v_cutoff = float(parts[9])
+                    v_bulk = float(parts[10])
+                    v_float = float(parts[11])
+                    v_back_disch = float(parts[22])
                 except Exception:
                     pass
-                if v_ac2_off is None:
-                    v_ac2_off = 52.0 if inverter_id in ('inv1', '1') else 56.6
 
-                out_labels = {'0': 'USB', '1': 'SUB', '2': 'SBU'}
-                charger_labels = {'1': 'Solar First', '2': 'Solar and Utility', '3': 'Solar Only'}
+        # Parse Flag 'd' in QFLAG for Feed to Grid enable/disable
+        if qflag_resp.startswith('('):
+            if 'D' in qflag_resp:
+                e_part = qflag_resp[1:].split('D')[0]
+            else:
+                e_part = qflag_resp[1:]
+            feed_enabled = 'd' in e_part
 
-                return {
-                    "inverter_id": inverter_id,
-                    "port": port,
-                    "machine_type": "Hybrid Grid-Tie with Backup" if machine_type in ("2", "02") else f"Mode {machine_type}",
-                    "output_source_priority": {
-                        "code": out_code,
-                        "label": out_labels.get(out_code, f"Unknown ({out_code})"),
-                        "options": [
-                            {"code": "0", "label": "USB", "cmd": "POP00"},
-                            {"code": "1", "label": "SUB", "cmd": "POP01"},
-                            {"code": "2", "label": "SBU", "cmd": "POP02"}
-                        ]
-                    },
-                    "charging_source_priority": {
-                        "code": charger_code,
-                        "label": charger_labels.get(charger_code, f"Unknown ({charger_code})"),
-                        "options": [
-                            {"code": "1", "label": "Solar First", "cmd": "PCP01"},
-                            {"code": "2", "label": "Solar and Utility", "cmd": "PCP02"},
-                            {"code": "3", "label": "Solar Only", "cmd": "PCP03"}
-                        ]
-                    },
-                    "feed_to_grid": {
-                        "enabled": feed_enabled,
-                        "label": "Enabled (Solar Grid Export Active)" if feed_enabled else "Disabled (No Grid Export)",
-                        "enable_cmd": "PEd",
-                        "disable_cmd": "PDd"
-                    },
-                    "voltage_thresholds": {
-                        "back_to_grid_voltage": {
-                            "value": v_back_grid,
-                            "unit": "V",
-                            "set_cmd_prefix": "PBCV"
-                        },
-                        "back_to_discharge_voltage": {
-                            "value": v_back_disch,
-                            "unit": "V",
-                            "set_cmd_prefix": "PBDV"
-                        },
-                        "battery_cut_off_voltage": {
-                            "value": v_cutoff,
-                            "unit": "V",
-                            "set_cmd_prefix": "PSDV"
-                        },
-                        "battery_voltage_turn_off_ac2": {
-                            "value": v_ac2_off,
-                            "unit": "V",
-                            "set_cmd_prefix": "PAC2OFF"
-                        },
-                        "bulk_charging_voltage": {
-                            "value": v_bulk,
-                            "unit": "V",
-                            "set_cmd_prefix": "PCVV"
-                        },
-                        "float_charging_voltage": {
-                            "value": v_float,
-                            "unit": "V",
-                            "set_cmd_prefix": "PBFT"
-                        }
-                    }
+        # Query DESS Monitor API for live AC2 turn-off voltage setting (outside serial lock!)
+        v_ac2_off = None
+        try:
+            from dess_scraper import dess_scraper
+            v_ac2_off = dess_scraper.query_device_ctrl_value(inverter_id, "bse_battery_voltage_time_turnoff")
+        except Exception:
+            pass
+        if v_ac2_off is None:
+            v_ac2_off = 52.0 if inverter_id in ('inv1', '1') else (50.0 if inverter_id in ('inv2', '2') else 54.0)
+
+        out_labels = {'0': 'USB', '1': 'SUB', '2': 'SBU'}
+        charger_labels = {'1': 'Solar First', '2': 'Solar and Utility', '3': 'Solar Only'}
+
+        return {
+            "inverter_id": inverter_id,
+            "port": port,
+            "machine_type": "Hybrid Grid-Tie with Backup" if machine_type in ("2", "02") else f"Mode {machine_type}",
+            "output_source_priority": {
+                "code": out_code,
+                "label": out_labels.get(out_code, f"Unknown ({out_code})"),
+                "options": [
+                    {"code": "0", "label": "USB", "cmd": "POP00"},
+                    {"code": "1", "label": "SUB", "cmd": "POP01"},
+                    {"code": "2", "label": "SBU", "cmd": "POP02"}
+                ]
+            },
+            "charging_source_priority": {
+                "code": charger_code,
+                "label": charger_labels.get(charger_code, f"Unknown ({charger_code})"),
+                "options": [
+                    {"code": "1", "label": "Solar First", "cmd": "PCP01"},
+                    {"code": "2", "label": "Solar and Utility", "cmd": "PCP02"},
+                    {"code": "3", "label": "Solar Only", "cmd": "PCP03"}
+                ]
+            },
+            "feed_to_grid": {
+                "enabled": feed_enabled,
+                "label": "Enabled (Solar Grid Export Active)" if feed_enabled else "Disabled (No Grid Export)",
+                "enable_cmd": "PEd",
+                "disable_cmd": "PDd"
+            },
+            "voltage_thresholds": {
+                "back_to_grid_voltage": {
+                    "value": v_back_grid,
+                    "unit": "V",
+                    "set_cmd_prefix": "PBCV"
+                },
+                "back_to_discharge_voltage": {
+                    "value": v_back_disch,
+                    "unit": "V",
+                    "set_cmd_prefix": "PBDV"
+                },
+                "battery_cut_off_voltage": {
+                    "value": v_cutoff,
+                    "unit": "V",
+                    "set_cmd_prefix": "PSDV"
+                },
+                "battery_voltage_turn_off_ac2": {
+                    "value": v_ac2_off,
+                    "unit": "V",
+                    "set_cmd_prefix": "PAC2OFF"
+                },
+                "bulk_charging_voltage": {
+                    "value": v_bulk,
+                    "unit": "V",
+                    "set_cmd_prefix": "PCVV"
+                },
+                "float_charging_voltage": {
+                    "value": v_float,
+                    "unit": "V",
+                    "set_cmd_prefix": "PBFT"
                 }
-            except Exception as e:
-                logger.error(f"Error querying settings for {inverter_id}: {e}")
-                return {"error": str(e)}
+            }
+        }
 
     def set_inverter_setting(self, inverter_id: str, command: str) -> Dict[str, Any]:
         """Send a configuration setting command to an inverter (e.g. POP01, PCP02, PEd, PDd, PBCV52.0)."""

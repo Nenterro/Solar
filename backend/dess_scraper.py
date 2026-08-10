@@ -29,6 +29,7 @@ class DESSMonitorScraper:
         self.session.headers.update({"User-Agent": "Mozilla/5.0"})
         self.token = ""
         self.secret = ""
+        self._ctrl_cache = {}  # (inverter_id, ctrl_id) -> (value, timestamp)
 
     def _sha1(self, text: str) -> str:
         return hashlib.sha1(text.encode()).hexdigest()
@@ -46,7 +47,7 @@ class DESSMonitorScraper:
                 "action": "authSource", "usr": DESS_USER,
                 "source": "1", "company-key": COMPANY_KEY,
             }
-            body = self.session.get(DESS_BASE, params=params, timeout=15).json()
+            body = self.session.get(DESS_BASE, params=params, timeout=5).json()
 
             if body.get("err") == 0 and "dat" in body:
                 self.token = body["dat"]["token"]
@@ -62,12 +63,20 @@ class DESSMonitorScraper:
 
     def query_device_ctrl_value(self, inverter_id: str, ctrl_id: str = "bse_battery_voltage_time_turnoff") -> Optional[float]:
         """
-        Query a device control parameter value from DESSMonitor API (e.g. bse_battery_voltage_time_turnoff).
+        Query a device control parameter value from DESSMonitor API with in-memory caching (3-min TTL).
         """
+        cache_key = (inverter_id, ctrl_id)
+        now_ts = time.time()
+
+        if cache_key in self._ctrl_cache:
+            val, ts = self._ctrl_cache[cache_key]
+            if now_ts - ts < 180: # 3-minute TTL
+                return val
+
         try:
             if not self.token:
                 if not self.login():
-                    return None
+                    return self._ctrl_cache.get(cache_key, (None, 0))[0]
 
             dev = next((d for d in INVERTER_DEVICES if d["id"] == inverter_id), None)
             if not dev:
@@ -83,15 +92,17 @@ class DESSMonitorScraper:
                 "id": ctrl_id
             }
 
-            resp = self.session.get(DESS_BASE, params=p, timeout=15).json()
+            resp = self.session.get(DESS_BASE, params=p, timeout=2.5).json()
             if resp.get("err") == 0 and "dat" in resp:
                 dat = resp["dat"]
                 if isinstance(dat, dict) and "val" in dat:
-                    return float(dat["val"])
-            return None
+                    val = float(dat["val"])
+                    self._ctrl_cache[cache_key] = (val, now_ts)
+                    return val
+            return self._ctrl_cache.get(cache_key, (None, 0))[0]
         except Exception as e:
             logger.warning(f"Failed to query DESS ctrl {ctrl_id} for {inverter_id}: {e}")
-            return None
+            return self._ctrl_cache.get(cache_key, (None, 0))[0]
 
     def _fetch_daily_totals_for_day(self, sn: str, pn: str, date_str: str) -> Optional[Dict[str, float]]:
         """Fetch data for a single day using the reliable queryDeviceDataOneDay action."""
