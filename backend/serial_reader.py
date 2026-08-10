@@ -485,16 +485,6 @@ class SerialInverterReader:
                 e_part = qflag_resp[1:]
             feed_enabled = 'd' in e_part
 
-        # Query DESS Monitor API for live AC2 turn-off voltage setting (outside serial lock!)
-        v_ac2_off = None
-        try:
-            from dess_scraper import dess_scraper
-            v_ac2_off = dess_scraper.query_device_ctrl_value(inverter_id, "bse_battery_voltage_time_turnoff")
-        except Exception:
-            pass
-        if v_ac2_off is None:
-            v_ac2_off = 52.0 if inverter_id in ('inv1', '1') else (50.0 if inverter_id in ('inv2', '2') else 54.0)
-
         out_labels = {'0': 'USB', '1': 'SUB', '2': 'SBU'}
         charger_labels = {'1': 'Solar First', '2': 'Solar and Utility', '3': 'Solar Only'}
 
@@ -541,11 +531,6 @@ class SerialInverterReader:
                     "value": v_cutoff,
                     "unit": "V",
                     "set_cmd_prefix": "PSDV"
-                },
-                "battery_voltage_turn_off_ac2": {
-                    "value": v_ac2_off,
-                    "unit": "V",
-                    "set_cmd_prefix": "PAC2OFF"
                 },
                 "bulk_charging_voltage": {
                     "value": v_bulk,
