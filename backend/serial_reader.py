@@ -577,4 +577,8 @@ class SerialInverterReader:
                 logger.error(f"Error setting command '{command}' on {inverter_id}: {e}")
                 return {"success": False, "error": str(e)}
 
+    def send_command(self, inverter_id: str, command: str) -> Dict[str, Any]:
+        """Alias for set_inverter_setting to execute setting commands."""
+        return self.set_inverter_setting(inverter_id, command)
+
 serial_reader = SerialInverterReader()
