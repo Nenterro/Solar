@@ -48,8 +48,6 @@ def background_telemetry_loop():
             if user_connected or (now_sec - last_db_log_time >= 60):
                 # 1. Capture RS232 telemetry snapshot from local USB inverters
                 readings = serial_reader_instance.poll_all_inverters()
-                if readings:
-                    # ALWAYS override inverter SOC and voltage with reliable RS485 BMS data (zero fallback to inverter)
                 bms_data = bms.get_latest_data()
                 bms_soc = float(bms_data.get("soc", 0.0))
                 bms_v = float(bms_data.get("voltage", 0.0))
