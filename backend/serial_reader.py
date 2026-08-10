@@ -107,8 +107,20 @@ class SerialInverterReader:
         effective_pv_voltage = pv_input_voltage if pv_input_voltage > 0 else pv2_voltage
         effective_pv_current = pv_input_current if pv_input_current > 0 else pv2_current
 
-        # Net Grid Power: Positive = Importing from grid, Negative = Exporting / Feeding to grid
-        grid_kw = round(load_kw + battery_net_power - solar_kw, 2)
+        # Real Grid Active Check: grid_voltage must be > 90.0V (otherwise off-grid / load shedding)
+        is_grid_connected = grid_voltage > 90.0
+
+        if not is_grid_connected:
+            # When Grid is offline / disconnected / load shedding, Grid Power is strictly 0.0 kW
+            grid_kw = 0.0
+        else:
+            # Grid is connected. Calculate raw net balance
+            raw_grid = load_kw + battery_net_power - solar_kw
+            # Filter out conversion loss / sensor noise tolerance (< 0.08 kW / 80W)
+            if abs(raw_grid) < 0.08:
+                grid_kw = 0.0
+            else:
+                grid_kw = round(raw_grid, 2)
 
         # Basic Sanity Bounds (Max 15kW per inverter, realistic voltages/temps)
         if abs(grid_kw) > 15.0 or abs(load_kw) > 15.0 or abs(solar_kw) > 15.0 or abs(battery_net_power) > 15.0:
@@ -145,7 +157,7 @@ class SerialInverterReader:
           "grid_power_kw": grid_kw,
           "grid_import_kw": max(0.0, grid_kw),
           "grid_export_kw": abs(min(0.0, grid_kw)),
-          "grid_active": grid_voltage > 90.0,
+          "grid_active": is_grid_connected,
           "inverter_temp_c": inverter_temp
         }
 
@@ -293,9 +305,23 @@ class SerialInverterReader:
         total_solar = round(sum(r.get("solar_power_kw", 0.0) for r in readings_list), 2)
         total_load = round(sum(r.get("ac_output_power_kw", 0.0) for r in readings_list), 2)
         total_battery = round(sum(r.get("battery_power_kw", 0.0) for r in readings_list), 2)
-        total_grid_import = round(sum(r.get("grid_import_kw", 0.0) for r in readings_list), 2)
-        total_grid_export = round(sum(r.get("grid_export_kw", 0.0) for r in readings_list), 2)
-        total_grid = round(sum(r.get("grid_power_kw", 0.0) for r in readings_list), 2)
+
+        active_grid_v = [r.get("grid_voltage", 0) for r in readings_list if r.get("grid_voltage", 0) > 90.0]
+
+        if not active_grid_v:
+            total_grid = 0.0
+            total_grid_import = 0.0
+            total_grid_export = 0.0
+        else:
+            total_grid_import = round(sum(r.get("grid_import_kw", 0.0) for r in readings_list), 2)
+            total_grid_export = round(sum(r.get("grid_export_kw", 0.0) for r in readings_list), 2)
+            raw_total_grid = round(sum(r.get("grid_power_kw", 0.0) for r in readings_list), 2)
+            if abs(raw_total_grid) < 0.08:
+                total_grid = 0.0
+                total_grid_import = 0.0
+                total_grid_export = 0.0
+            else:
+                total_grid = raw_total_grid
 
         valid_soc = [r.get("battery_capacity_pct", 0) for r in readings_list if r.get("battery_capacity_pct")]
         avg_soc = round(sum(valid_soc) / len(valid_soc), 2) if valid_soc else 0.0
