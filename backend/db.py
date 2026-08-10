@@ -202,6 +202,17 @@ def log_telemetry_snapshot(readings: Dict[str, Dict[str, Any]], bms_power_w: Opt
                 valid_readings[inv_id] = r
                 clamped_soc = min(100.0, max(0.0, float(soc_val)))
 
+                # Rate-of-change DB glitch suppression (SOC cannot jump > 5% in 1 minute)
+                if not hasattr(log_telemetry_snapshot, 'last_db_soc'):
+                    log_telemetry_snapshot.last_db_soc = {}
+                
+                prev_db_soc = log_telemetry_snapshot.last_db_soc.get(inv_id)
+                if prev_db_soc is not None and abs(clamped_soc - prev_db_soc) > 5.0:
+                    logger.warning(f"Telemetry DB log SOC glitch suppressed for {inv_id}: {clamped_soc}% vs last recorded {prev_db_soc}%. Using {prev_db_soc}%.")
+                    clamped_soc = prev_db_soc
+                else:
+                    log_telemetry_snapshot.last_db_soc[inv_id] = clamped_soc
+
                 conn.execute("""
                     INSERT INTO telemetry_history 
                     (timestamp, inverter_id, solar_w, load_w, grid_w, battery_w, battery_pct, battery_v, grid_v, temp_c)

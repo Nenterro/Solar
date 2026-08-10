@@ -55,6 +55,8 @@ class SerialInverterReader:
         self._last_port_count = -1
         self.serial_lock = threading.Lock()
         self.readings_cache: Dict[str, Dict[str, Any]] = {}
+        self.last_valid_soc: Dict[str, float] = {}
+        self.last_soc_time: Dict[str, float] = {}
         db.init_db()
 
     def parse_qpigs(self, qpigs_str: str, inv_id: str, qpigs2_str: Optional[str] = None) -> Dict[str, Any]:
@@ -78,6 +80,24 @@ class SerialInverterReader:
         battery_voltage = float(parts[8])
         battery_charge_current = float(parts[9])
         battery_capacity_pct = float(parts[10])
+
+        # Rate-of-change glitch filter for Battery SOC:
+        # Battery SOC cannot physically jump up/down by > 5% in < 5 mins
+        now_t = time.time()
+        prev_soc = self.last_valid_soc.get(inv_id)
+        prev_time = self.last_soc_time.get(inv_id, 0)
+
+        if prev_soc is not None and (now_t - prev_time) < 300:
+            if abs(battery_capacity_pct - prev_soc) > 5.0:
+                logger.warning(f"Inverter {inv_id} QPIGS SOC glitch rejected: {battery_capacity_pct}% vs last valid {prev_soc}%. Retaining {prev_soc}%.")
+                battery_capacity_pct = prev_soc
+            else:
+                self.last_valid_soc[inv_id] = battery_capacity_pct
+                self.last_soc_time[inv_id] = now_t
+        else:
+            self.last_valid_soc[inv_id] = battery_capacity_pct
+            self.last_soc_time[inv_id] = now_t
+
         inverter_temp = float(parts[11])
         pv_input_current = float(parts[12])
         pv_input_voltage = float(parts[13])

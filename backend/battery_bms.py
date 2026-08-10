@@ -72,6 +72,14 @@ class BatteryBMS:
                                 time.sleep(0.15)
                                 continue
 
+                            # Rate-of-change glitch filter: Battery SOC cannot physically drop/jump > 5% in < 5 mins
+                            now_t = time.time()
+                            if self.last_valid_soc is not None and (now_t - getattr(self, 'last_soc_time', 0)) < 300:
+                                if abs(soc_raw - self.last_valid_soc) > 5.0:
+                                    logger.warning(f"BMS RS485 attempt {attempt+1} SOC glitch rejected: {soc_raw}% vs last valid {self.last_valid_soc}%. Retrying...")
+                                    time.sleep(0.15)
+                                    continue
+
                             power = voltage * current
                             self.latest_data["soc"] = int(soc_raw)
                             self.latest_data["voltage"] = voltage
@@ -80,6 +88,7 @@ class BatteryBMS:
                             self.latest_data["power"] = round(power, 2)
                             
                             self.last_valid_soc = int(soc_raw)
+                            self.last_soc_time = now_t
                             self.last_valid_voltage = voltage
                             
                             if current > 0.5:
@@ -96,12 +105,17 @@ class BatteryBMS:
                             time.sleep(0.15)
 
                     self.latest_data["status"] = "No Data / Invalid Response"
+                    # Preserve last valid SOC if all attempts failed or returned glitches
+                    if self.last_valid_soc is not None:
+                        self.latest_data["soc"] = self.last_valid_soc
 
                 finally:
                     s.close()
             except Exception as e:
                 logger.error(f"Error polling battery: {e}")
                 self.latest_data["status"] = f"Error: {str(e)}"
+                if self.last_valid_soc is not None:
+                    self.latest_data["soc"] = self.last_valid_soc
 
     def get_latest_data(self):
         with self.lock:
