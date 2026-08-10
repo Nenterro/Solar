@@ -57,7 +57,7 @@ class BatteryBMS:
                         voltage = voltage_raw / 10.0
                         
                         # Index 6,7 is Reg 51 (SOC)
-                        soc = struct.unpack('>H', res[6:8])[0]
+                        soc_raw = struct.unpack('>H', res[6:8])[0]
                         
                         # Index 8,9,10,11 is Reg 52/53 (Capacity in mAh)
                         capacity_raw = struct.unpack('>I', res[8:12])[0]
@@ -65,12 +65,22 @@ class BatteryBMS:
                         
                         # Index 12,13 is Reg 54 (Current)
                         current_raw = struct.unpack('>h', res[12:14])[0]
-                        current = current_raw / 100.0 # Assuming 2 decimal places, or 1? We'll leave it as / 10.0 for now, let's do 100.0 just in case. Wait, usually it's /10 or /100. Let's do / 100.0 but since it's 0 it doesn't matter.
                         current = current_raw / 10.0 # Standard is 10.0
                         
+                        # Strict Bounds Validation for Knox BMS RS485 Response
+                        if soc_raw > 100 or soc_raw < 0:
+                            logger.warning(f"RS485 BMS returned invalid SOC ({soc_raw}%), ignoring frame.")
+                            self.latest_data["status"] = f"Corrupted Frame (SOC {soc_raw}%)"
+                            return
+
+                        if voltage > 70.0 or voltage < 35.0:
+                            logger.warning(f"RS485 BMS returned invalid Voltage ({voltage}V), ignoring frame.")
+                            self.latest_data["status"] = f"Corrupted Frame (Voltage {voltage}V)"
+                            return
+
                         power = voltage * current
                         
-                        self.latest_data["soc"] = soc
+                        self.latest_data["soc"] = int(soc_raw)
                         self.latest_data["voltage"] = voltage
                         self.latest_data["capacity_ah"] = capacity_ah
                         self.latest_data["current"] = current

@@ -51,13 +51,13 @@ def background_telemetry_loop():
                 if readings:
                     # Override glitchy inverter SOC and voltage with reliable RS485 BMS data
                     bms_data = bms.get_latest_data()
-                    bms_soc = bms_data.get("soc", 0.0)
-                    bms_v = bms_data.get("voltage", 0.0)
-                    if bms_soc > 0:
+                    bms_soc = float(bms_data.get("soc", 0.0))
+                    bms_v = float(bms_data.get("voltage", 0.0))
+                    if 0.0 <= bms_soc <= 100.0 and bms_soc > 0:
                         for inv_id in readings:
-                            readings[inv_id]["battery_capacity_pct"] = float(bms_soc)
-                            if bms_v > 0:
-                                readings[inv_id]["battery_voltage"] = float(bms_v)
+                            readings[inv_id]["battery_capacity_pct"] = bms_soc
+                            if 35.0 <= bms_v <= 70.0:
+                                readings[inv_id]["battery_voltage"] = bms_v
 
                 now_sec = time.time()
                 # Log to SQLite only once every 60 seconds to prevent DB bloat
