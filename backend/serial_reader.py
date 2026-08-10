@@ -116,6 +116,9 @@ class SerialInverterReader:
             
         if battery_voltage > 70.0 or battery_voltage < 35.0:
             raise ValueError(f"Absurd battery voltage ({battery_voltage}V) detected, ignoring frame")
+
+        if battery_capacity_pct > 100.0 or battery_capacity_pct < 0.0:
+            raise ValueError(f"Absurd battery SOC ({battery_capacity_pct}%) detected, ignoring corrupted frame")
             
         if inverter_temp > 120.0 or inverter_temp < -20.0:
             raise ValueError(f"Absurd inverter temp ({inverter_temp}C) detected, ignoring frame")

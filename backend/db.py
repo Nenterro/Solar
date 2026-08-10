@@ -191,13 +191,16 @@ def log_telemetry_snapshot(readings: Dict[str, Dict[str, Any]]):
                 grid_kw = r.get("grid_power_kw", 0.0)
                 bat_kw = r.get("battery_power_kw", 0.0)
                 load_kw = r.get("ac_output_power_kw", 0.0)
+                soc_val = r.get("battery_capacity_pct", 0.0)
+                bat_v = r.get("battery_voltage", 0.0)
                 
-                # Modbus glitch filter (>100kW is physically impossible for residential)
-                if abs(solar_kw) > 100.0 or abs(grid_kw) > 100.0 or abs(bat_kw) > 100.0 or abs(load_kw) > 100.0:
-                    logger.warning(f"Outlier detected for {inv_id}: bat={bat_kw}, grid={grid_kw}. Skipping.")
+                # Modbus / Serial glitch filter (>100kW or SOC > 100% or battery_v > 70V is corrupted)
+                if abs(solar_kw) > 100.0 or abs(grid_kw) > 100.0 or abs(bat_kw) > 100.0 or abs(load_kw) > 100.0 or soc_val > 100.0 or soc_val < 0.0 or bat_v > 70.0:
+                    logger.warning(f"Outlier detected for {inv_id}: bat={bat_kw}, grid={grid_kw}, soc={soc_val}%, v={bat_v}V. Skipping.")
                     continue
                 
                 valid_readings[inv_id] = r
+                clamped_soc = min(100.0, max(0.0, float(soc_val)))
 
                 conn.execute("""
                     INSERT INTO telemetry_history 
@@ -210,8 +213,8 @@ def log_telemetry_snapshot(readings: Dict[str, Dict[str, Any]]):
                     r.get("ac_output_power_kw", 0.0) * 1000.0,
                     r.get("grid_power_kw", 0.0) * 1000.0,
                     r.get("battery_power_kw", 0.0) * 1000.0,
-                    r.get("battery_capacity_pct", 0.0),
-                    r.get("battery_voltage", 0.0),
+                    clamped_soc,
+                    bat_v,
                     r.get("grid_voltage", 0.0),
                     r.get("inverter_temp_c", 0.0)
                 ))
@@ -660,8 +663,11 @@ def query_daily_history(date_str: str, inverter_id: str = "all") -> List[Dict[st
                 bat_kw = round(r["battery_w"] / 1000.0, 2)
 
                 # Hide historical outliers from graph
-                if abs(solar_kw) > 100.0 or abs(load_kw) > 100.0 or abs(grid_kw) > 100.0 or abs(bat_kw) > 100.0:
+                raw_soc = float(r["battery_pct"] or 0.0)
+                if abs(solar_kw) > 100.0 or abs(load_kw) > 100.0 or abs(grid_kw) > 100.0 or abs(bat_kw) > 100.0 or raw_soc > 100.0:
                     continue
+
+                clamped_soc = min(100.0, max(0.0, raw_soc))
 
                 results.append({
                     "time": time_label,
@@ -671,7 +677,7 @@ def query_daily_history(date_str: str, inverter_id: str = "all") -> List[Dict[st
                     "gridExport": abs(min(0.0, grid_kw)),
                     "batteryCharge": max(0.0, bat_kw),
                     "batteryDischarge": abs(min(0.0, bat_kw)),
-                    "batteryLevel": r["battery_pct"],
+                    "batteryLevel": clamped_soc,
                     "gridActive": r["grid_v"] > 90.0
                 })
 
