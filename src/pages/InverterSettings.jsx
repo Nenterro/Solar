@@ -139,45 +139,35 @@ export default function InverterSettings() {
       });
 
       if (res && res.success) {
-        showToast(`Successfully updated ${label}`, 'success');
-        loadSettings();
+        showToast(`Successfully updated ${label} (${command})!`, 'success');
+        await loadSettings();
       } else {
-        showToast(res?.detail || res?.error || `Failed to update ${label}`, 'error');
+        showToast(`Hardware rejected setting: ${res?.response || res?.detail || 'NAK'}`, 'error');
       }
     } catch (err) {
-      showToast(`Error communicating with inverter: ${err.message}`, 'error');
+      showToast(`Error applying command: ${err.message}`, 'error');
     } finally {
       setIsSaving(false);
     }
   };
 
-  // Handle Voltage Input Apply
   const handleVoltageApply = (key, cmdPrefix, label) => {
     const val = parseFloat(voltageForm[key]);
-    if (isNaN(val) || val < 40.0 || val > 65.0) {
-      showToast('Please enter a valid voltage between 40.0V and 65.0V', 'error');
+    if (isNaN(val) || val <= 0) {
+      showToast(`Invalid voltage value for ${label}`, 'error');
       return;
     }
     const formattedVal = val.toFixed(1);
-    const command = `${cmdPrefix}${formattedVal}`;
-    handleUpdateCommand(command, `${label} (${formattedVal}V)`);
+    const cmd = `${cmdPrefix}${formattedVal}`;
+    handleUpdateCommand(cmd, label);
   };
 
   // Render top bar InverterSelector into mobile header slot
   const mobileHeaderSelector = headerSlot ? createPortal(
-    <div className="mobile-header-inverter-selector">
-      <UnifiedGlassDropdown 
-        options={[
-          { id: 'inv1', label: 'Inverter 1' },
-          { id: 'inv2', label: 'Inverter 2' },
-          { id: 'inv3', label: 'Inverter 3' }
-        ]}
-        value={selectedInverter === 'all' ? 'inv3' : selectedInverter}
-        onChange={handleInverterChange}
-        prefixIcon={Cpu}
-        compact={true}
-      />
-    </div>,
+    <InverterSelector 
+      selectedInverter={selectedInverter === 'all' ? 'inv3' : selectedInverter}
+      onChange={handleInverterChange}
+    />,
     headerSlot
   ) : null;
 
@@ -208,7 +198,7 @@ export default function InverterSettings() {
           <Sliders className="header-icon" size={24} />
           <div>
             <h2>Inverter Parameters & Control</h2>
-            <p className="subtitle">Real-time hardware registers, priority source, feed-to-grid, and voltage thresholds</p>
+            <p className="subtitle">Real-time hardware registers, priority source, feed-to-grid, and AC2 voltage thresholds</p>
           </div>
         </div>
 
@@ -269,204 +259,244 @@ export default function InverterSettings() {
                 </div>
                 <div className="info-item">
                   <span className="info-label">Operating Mode:</span>
-                  <span className="info-value">{settingsData.machine_type}</span>
+                  <span className="info-value highlight">{settingsData.machine_type}</span>
                 </div>
               </div>
             </div>
 
-            {/* Card 2: Solar Feed-to-Grid Control */}
+            {/* Card 2: Solar Feed To Grid Control */}
             <div className="settings-card glass-panel">
               <div className="card-header">
-                <ArrowUpRight size={20} className="card-icon" />
-                <h3>Solar Feed-to-Grid</h3>
+                <ArrowUpRight size={20} className="card-icon export" />
+                <h3>Solar Feed to Grid</h3>
               </div>
-              <p className="card-desc">Enable or disable excess solar energy export to the electrical grid</p>
-              
-              <div className="control-block">
-                <div className="status-indicator">
-                  <span className="status-label">Current Export Status:</span>
+              <p className="card-desc">
+                Controls if excess solar power is exported to the grid.
+              </p>
+
+              {/* Desktop Button Group View */}
+              <div className="setting-control-row desktop-only">
+                <div className="status-badge-box">
                   <span className={`status-pill ${settingsData.feed_to_grid?.enabled ? 'enabled' : 'disabled'}`}>
                     {settingsData.feed_to_grid?.label}
                   </span>
                 </div>
-
-                <div className="btn-toggle-group">
-                  <button 
-                    className={`toggle-btn ${settingsData.feed_to_grid?.enabled ? 'active' : ''}`}
-                    onClick={() => handleUpdateCommand(settingsData.feed_to_grid?.enable_cmd, 'Solar Feed to Grid Export')}
-                    disabled={isSaving || settingsData.feed_to_grid?.enabled}
+                <div className="toggle-btn-group">
+                  <button
+                    className={`action-btn ${settingsData.feed_to_grid?.enabled ? 'active' : ''}`}
+                    onClick={() => handleUpdateCommand(settingsData.feed_to_grid?.enable_cmd, 'Enable Feed-to-Grid')}
+                    disabled={isSaving}
                   >
                     Enable Export
                   </button>
-                  <button 
-                    className={`toggle-btn ${!settingsData.feed_to_grid?.enabled ? 'active-off' : ''}`}
-                    onClick={() => handleUpdateCommand(settingsData.feed_to_grid?.disable_cmd, 'Disable Grid Export')}
-                    disabled={isSaving || !settingsData.feed_to_grid?.enabled}
+                  <button
+                    className={`action-btn danger ${!settingsData.feed_to_grid?.enabled ? 'active' : ''}`}
+                    onClick={() => handleUpdateCommand(settingsData.feed_to_grid?.disable_cmd, 'Disable Feed-to-Grid')}
+                    disabled={isSaving}
                   >
                     Disable Export
                   </button>
                 </div>
               </div>
+
+              {/* Mobile Unified Glass Dropdown View */}
+              <div className="mobile-only mobile-dropdown-container">
+                <UnifiedGlassDropdown 
+                  options={[
+                    { value: 'PEd', label: 'Enable Export' },
+                    { value: 'PDd', label: 'Disable Export' }
+                  ]}
+                  value={settingsData.feed_to_grid?.enabled ? 'PEd' : 'PDd'}
+                  onChange={(cmd) => {
+                    handleUpdateCommand(cmd, cmd === 'PEd' ? 'Enable Export' : 'Disable Export');
+                  }}
+                  disabled={isSaving}
+                  icon={ArrowUpRight}
+                />
+              </div>
             </div>
 
           </div>
 
-          {/* Row 2: Priorities (Output Source Priority & Charging Source Priority) */}
+          {/* Row 2: Source Priority Controls */}
           <div className="cards-row two-columns">
             
             {/* Card 3: Output Source Priority */}
             <div className="settings-card glass-panel">
               <div className="card-header">
-                <Zap size={20} className="card-icon" />
+                <Power size={20} className="card-icon output" />
                 <h3>Output Source Priority</h3>
               </div>
-              <p className="card-desc">Configure load power sourcing order (USB / SUB / SBU)</p>
+              <p className="card-desc">
+                Sets output load power source priority.
+              </p>
 
-              <div className="priority-options">
-                {settingsData.output_source_priority?.options?.map((opt) => {
-                  const isSelected = settingsData.output_source_priority.code === opt.code;
-                  return (
-                    <div 
-                      key={opt.code} 
-                      className={`priority-item ${isSelected ? 'selected' : ''}`}
-                      onClick={() => !isSelected && !isSaving && handleUpdateCommand(opt.cmd, `Output Source Priority to ${opt.label}`)}
+              {/* Desktop Button Group View */}
+              <div className="desktop-only priority-container-desktop">
+                <div className="current-badge">
+                  Current Setting: <strong>{cleanLabel(settingsData.output_source_priority?.label)}</strong>
+                </div>
+                <div className="options-grid three-single-row">
+                  {settingsData.output_source_priority?.options?.map(opt => (
+                    <button
+                      key={opt.code}
+                      className={`option-btn tall-btn ${settingsData.output_source_priority?.code === opt.code ? 'selected' : ''}`}
+                      onClick={() => handleUpdateCommand(opt.cmd, `Output Priority: ${cleanLabel(opt.label)}`)}
+                      disabled={isSaving}
                     >
-                      <div className="radio-circle">{isSelected && <div className="inner-dot" />}</div>
-                      <div className="opt-details">
-                        <span className="opt-label">{opt.label}</span>
-                        <span className="opt-sub">
-                          {opt.label === 'USB' && 'Utility power first, solar/battery backup'}
-                          {opt.label === 'SUB' && 'Solar first, Utility second, Battery backup'}
-                          {opt.label === 'SBU' && 'Solar first, Battery second, Utility backup'}
-                        </span>
-                      </div>
-                    </div>
-                  );
-                })}
+                      <span>{cleanLabel(opt.label)}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Mobile Unified Glass Dropdown View */}
+              <div className="mobile-only mobile-dropdown-container">
+                <UnifiedGlassDropdown 
+                  options={settingsData.output_source_priority?.options?.map(o => ({ value: o.cmd, label: cleanLabel(o.label) })) || []}
+                  value={settingsData.output_source_priority?.options?.find(o => o.code === settingsData.output_source_priority?.code)?.cmd || 'POP01'}
+                  onChange={(cmd) => {
+                    const opt = settingsData.output_source_priority?.options?.find(o => o.cmd === cmd);
+                    handleUpdateCommand(cmd, `Output Priority: ${cleanLabel(opt?.label || cmd)}`);
+                  }}
+                  disabled={isSaving}
+                  icon={Power}
+                />
               </div>
             </div>
 
             {/* Card 4: Charging Source Priority */}
             <div className="settings-card glass-panel">
               <div className="card-header">
-                <BatteryCharging size={20} className="card-icon" />
+                <BatteryCharging size={20} className="card-icon charger" />
                 <h3>Charging Source Priority</h3>
               </div>
-              <p className="card-desc">Configure battery charger power sources</p>
+              <p className="card-desc">
+                Sets battery charging priority.
+              </p>
 
-              <div className="priority-options">
-                {settingsData.charging_source_priority?.options?.map((opt) => {
-                  const isSelected = settingsData.charging_source_priority.code === opt.code;
-                  return (
-                    <div 
-                      key={opt.code} 
-                      className={`priority-item ${isSelected ? 'selected' : ''}`}
-                      onClick={() => !isSelected && !isSaving && handleUpdateCommand(opt.cmd, `Charging Source Priority to ${opt.label}`)}
+              {/* Desktop Button Group View */}
+              <div className="desktop-only priority-container-desktop">
+                <div className="current-badge">
+                  Current Setting: <strong>{cleanLabel(settingsData.charging_source_priority?.label)}</strong>
+                </div>
+                <div className="options-grid three-single-row">
+                  {settingsData.charging_source_priority?.options?.map(opt => (
+                    <button
+                      key={opt.code}
+                      className={`option-btn tall-btn ${settingsData.charging_source_priority?.code === opt.code ? 'selected' : ''}`}
+                      onClick={() => handleUpdateCommand(opt.cmd, `Charger Priority: ${cleanLabel(opt.label)}`)}
+                      disabled={isSaving}
                     >
-                      <div className="radio-circle">{isSelected && <div className="inner-dot" />}</div>
-                      <div className="opt-details">
-                        <span className="opt-label">{opt.label}</span>
-                        <span className="opt-sub">
-                          {opt.label === 'Solar First' && 'Solar charges battery first, utility if solar absent'}
-                          {opt.label === 'Solar and Utility' && 'Solar & Utility charge battery simultaneously'}
-                          {opt.label === 'Solar Only' && 'Solar charges battery exclusively, utility never charges'}
-                        </span>
-                      </div>
-                    </div>
-                  );
-                })}
+                      <span>{cleanLabel(opt.label)}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Mobile Unified Glass Dropdown View */}
+              <div className="mobile-only mobile-dropdown-container">
+                <UnifiedGlassDropdown 
+                  options={settingsData.charging_source_priority?.options?.map(o => ({ value: o.cmd, label: cleanLabel(o.label) })) || []}
+                  value={settingsData.charging_source_priority?.options?.find(o => o.code === settingsData.charging_source_priority?.code)?.cmd || 'PCP01'}
+                  onChange={(cmd) => {
+                    const opt = settingsData.charging_source_priority?.options?.find(o => o.cmd === cmd);
+                    handleUpdateCommand(cmd, `Charger Priority: ${cleanLabel(opt?.label || cmd)}`);
+                  }}
+                  disabled={isSaving}
+                  icon={BatteryCharging}
+                />
               </div>
             </div>
 
           </div>
 
-          {/* Row 3: Operating Voltage Thresholds */}
-          <div className="cards-row full-width">
-            <div className="settings-card glass-panel">
-              <div className="card-header">
-                <ShieldAlert size={20} className="card-icon" />
-                <h3>Voltage Cut-off & Discharge Thresholds</h3>
+          {/* Row 3: System Battery & Grid Thresholds (Full Width Card) */}
+          <div className="settings-card glass-panel full-width">
+            <div className="card-header">
+              <ShieldAlert size={20} className="card-icon battery-v" />
+              <h3>System Battery Voltage Thresholds</h3>
+            </div>
+            <p className="card-desc">
+              System low battery cut-off and grid switchover limits.
+            </p>
+
+            <div className="voltage-thresholds-grid three-cols">
+              <div className="voltage-input-card">
+                <div className="vol-title-box">
+                  <span className="vol-title">Back to Grid Voltage</span>
+                  <span className="vol-sub">Switch from battery to utility</span>
+                </div>
+                <div className="vol-input-group">
+                  <input
+                    type="number"
+                    step="0.1"
+                    className="vol-input"
+                    value={voltageForm.back_to_grid_voltage}
+                    onChange={(e) => setVoltageForm({ ...voltageForm, back_to_grid_voltage: e.target.value })}
+                  />
+                  <span className="vol-unit">V</span>
+                  <button 
+                    className="apply-btn"
+                    onClick={() => handleVoltageApply('back_to_grid_voltage', 'PBCV', 'Back to Grid Voltage')}
+                    disabled={isSaving}
+                  >
+                    <Save size={14} />
+                    <span>Set</span>
+                  </button>
+                </div>
               </div>
-              <p className="card-desc">Set custom battery voltage transition levels</p>
 
-              <div className="voltage-grid">
-                
-                <div className="voltage-input-card">
-                  <div className="vol-title-box">
-                    <span className="vol-title">Back to Grid Voltage</span>
-                    <span className="vol-sub">Switch load from battery to utility</span>
-                  </div>
-                  <div className="vol-input-group">
-                    <input
-                      type="number"
-                      step="0.1"
-                      className="vol-input"
-                      value={voltageForm.back_to_grid_voltage}
-                      onChange={(e) => setVoltageForm({ ...voltageForm, back_to_grid_voltage: e.target.value })}
-                    />
-                    <span className="vol-unit">V</span>
-                    <button 
-                      className="apply-btn"
-                      onClick={() => handleVoltageApply('back_to_grid_voltage', 'PBCV', 'Back to Grid Voltage')}
-                      disabled={isSaving}
-                    >
-                      <Save size={14} />
-                      <span>Set</span>
-                    </button>
-                  </div>
+              <div className="voltage-input-card">
+                <div className="vol-title-box">
+                  <span className="vol-title">Back to Discharge Voltage</span>
+                  <span className="vol-sub">Switch from utility to battery</span>
                 </div>
-
-                <div className="voltage-input-card">
-                  <div className="vol-title-box">
-                    <span className="vol-title">Back to Discharge Voltage</span>
-                    <span className="vol-sub">Switch from utility to battery</span>
-                  </div>
-                  <div className="vol-input-group">
-                    <input
-                      type="number"
-                      step="0.1"
-                      className="vol-input"
-                      value={voltageForm.back_to_discharge_voltage}
-                      onChange={(e) => setVoltageForm({ ...voltageForm, back_to_discharge_voltage: e.target.value })}
-                    />
-                    <span className="vol-unit">V</span>
-                    <button 
-                      className="apply-btn"
-                      onClick={() => handleVoltageApply('back_to_discharge_voltage', 'PBDV', 'Back to Discharge Voltage')}
-                      disabled={isSaving}
-                    >
-                      <Save size={14} />
-                      <span>Set</span>
-                    </button>
-                  </div>
+                <div className="vol-input-group">
+                  <input
+                    type="number"
+                    step="0.1"
+                    className="vol-input"
+                    value={voltageForm.back_to_discharge_voltage}
+                    onChange={(e) => setVoltageForm({ ...voltageForm, back_to_discharge_voltage: e.target.value })}
+                  />
+                  <span className="vol-unit">V</span>
+                  <button 
+                    className="apply-btn"
+                    onClick={() => handleVoltageApply('back_to_discharge_voltage', 'PBDV', 'Back to Discharge Voltage')}
+                    disabled={isSaving}
+                  >
+                    <Save size={14} />
+                    <span>Set</span>
+                  </button>
                 </div>
-
-                <div className="voltage-input-card">
-                  <div className="vol-title-box">
-                    <span className="vol-title">Low Battery Cut-Off Voltage</span>
-                    <span className="vol-sub">Emergency shutdown threshold</span>
-                  </div>
-                  <div className="vol-input-group">
-                    <input
-                      type="number"
-                      step="0.1"
-                      className="vol-input"
-                      value={voltageForm.battery_cut_off_voltage}
-                      onChange={(e) => setVoltageForm({ ...voltageForm, battery_cut_off_voltage: e.target.value })}
-                    />
-                    <span className="vol-unit">V</span>
-                    <button 
-                      className="apply-btn"
-                      onClick={() => handleVoltageApply('battery_cut_off_voltage', 'PSDV', 'Battery Cut-Off Voltage')}
-                      disabled={isSaving}
-                    >
-                      <Save size={14} />
-                      <span>Set</span>
-                    </button>
-                  </div>
-                </div>
-
               </div>
+
+              <div className="voltage-input-card">
+                <div className="vol-title-box">
+                  <span className="vol-title">Low Battery Cut-Off Voltage</span>
+                  <span className="vol-sub">Emergency shutdown threshold</span>
+                </div>
+                <div className="vol-input-group">
+                  <input
+                    type="number"
+                    step="0.1"
+                    className="vol-input"
+                    value={voltageForm.battery_cut_off_voltage}
+                    onChange={(e) => setVoltageForm({ ...voltageForm, battery_cut_off_voltage: e.target.value })}
+                  />
+                  <span className="vol-unit">V</span>
+                  <button 
+                    className="apply-btn"
+                    onClick={() => handleVoltageApply('battery_cut_off_voltage', 'PSDV', 'Battery Cut-Off Voltage')}
+                    disabled={isSaving}
+                  >
+                    <Save size={14} />
+                    <span>Set</span>
+                  </button>
+                </div>
+              </div>
+
             </div>
           </div>
 
