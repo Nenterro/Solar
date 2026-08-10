@@ -318,7 +318,17 @@ class SerialInverterReader:
         all_readings = self.get_readings()
 
         if selected_inverter in all_readings:
-            return all_readings[selected_inverter]
+            res = dict(all_readings[selected_inverter])
+            try:
+                from battery_bms import bms
+                bms_data = bms.get_latest_data()
+                if bms_data.get("soc", 0) > 0:
+                    res["battery_capacity_pct"] = float(bms_data["soc"])
+                if bms_data.get("voltage", 0.0) > 0.0:
+                    res["battery_voltage"] = float(bms_data["voltage"])
+            except Exception:
+                pass
+            return res
 
         # Aggregate metrics for "all" selection
         readings_list = list(all_readings.values())

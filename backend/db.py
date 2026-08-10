@@ -193,6 +193,16 @@ def log_telemetry_snapshot(readings: Dict[str, Dict[str, Any]], bms_power_w: Opt
             except Exception:
                 pass
 
+            if bms_soc is None and hasattr(log_telemetry_snapshot, 'last_known_bms_soc'):
+                bms_soc = log_telemetry_snapshot.last_known_bms_soc
+            elif bms_soc is not None:
+                log_telemetry_snapshot.last_known_bms_soc = bms_soc
+
+            if bms_v is None and hasattr(log_telemetry_snapshot, 'last_known_bms_v'):
+                bms_v = log_telemetry_snapshot.last_known_bms_v
+            elif bms_v is not None:
+                log_telemetry_snapshot.last_known_bms_v = bms_v
+
             # 1. Insert per-inverter rows
             valid_readings = {}
             for inv_id, r in readings.items():
@@ -206,8 +216,8 @@ def log_telemetry_snapshot(readings: Dict[str, Dict[str, Any]], bms_power_w: Opt
                 load_kw = r.get("ac_output_power_kw", 0.0)
                 
                 # STRICT DIRECTIVE: Use Knox BMS RS485 SOC & Voltage ONLY (never inverter wires!)
-                soc_val = bms_soc if bms_soc is not None else r.get("battery_capacity_pct", 0.0)
-                bat_v = bms_v if bms_v is not None else r.get("battery_voltage", 0.0)
+                soc_val = bms_soc if bms_soc is not None else 0.0
+                bat_v = bms_v if bms_v is not None else 0.0
                 
                 # Modbus / Serial glitch filter (>100kW or SOC > 100% or battery_v > 70V is corrupted)
                 if abs(solar_kw) > 100.0 or abs(grid_kw) > 100.0 or abs(bat_kw) > 100.0 or abs(load_kw) > 100.0 or soc_val > 100.0 or soc_val < 0.0 or bat_v > 70.0:
@@ -712,12 +722,25 @@ def query_daily_totals_for_year(year_str: str, inverter_id: str = "all") -> List
 def query_daily_history(date_str: str, inverter_id: str = "all") -> List[Dict[str, Any]]:
     """
     Query 1-minute telemetry history for Graphs Page.
-    Returns ONLY points that actually exist in the database — no zero-padding.
-    The frontend graph scales its X-axis dynamically based on the returned data range.
+    STRICT DIRECTIVE: Always uses Knox BMS RS485 SOC for batteryLevel across all inverter selections (all, inv1, inv2, inv3).
     """
     try:
         conn = get_db_connection()
         try:
+            # Build 1-minute lookup map for Knox BMS RS485 SOC for this day (from 'all' rows)
+            bms_soc_map = {}
+            bms_rows = conn.execute("""
+                SELECT timestamp, battery_pct
+                FROM telemetry_history
+                WHERE timestamp LIKE ? AND inverter_id = 'all'
+                ORDER BY timestamp ASC
+            """, (f"{date_str}%",)).fetchall()
+            for br in bms_rows:
+                ts_str = br["timestamp"]
+                t_key = ts_str[11:16] if len(ts_str) >= 16 else ts_str
+                if br["battery_pct"] and br["battery_pct"] > 0:
+                    bms_soc_map[t_key] = br["battery_pct"]
+
             rows = conn.execute("""
                 SELECT timestamp, solar_w, load_w, grid_w, battery_w, battery_pct, grid_v
                 FROM telemetry_history
@@ -735,8 +758,8 @@ def query_daily_history(date_str: str, inverter_id: str = "all") -> List[Dict[st
                 grid_kw = round(r["grid_w"] / 1000.0, 2)
                 bat_kw = round(r["battery_w"] / 1000.0, 2)
 
-                # Hide historical outliers from graph
-                raw_soc = float(r["battery_pct"] or 0.0)
+                # STRICT: Prefer Knox BMS RS485 SOC for battery level
+                raw_soc = bms_soc_map.get(time_label, float(r["battery_pct"] or 0.0))
                 if abs(solar_kw) > 100.0 or abs(load_kw) > 100.0 or abs(grid_kw) > 100.0 or abs(bat_kw) > 100.0 or raw_soc > 100.0:
                     continue
 
