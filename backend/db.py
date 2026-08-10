@@ -169,7 +169,7 @@ def update_realtime(inverter_id: str, payload: Dict[str, Any]):
         logger.error(f"Error updating realtime: {e}")
 
 
-def log_telemetry_snapshot(readings: Dict[str, Dict[str, Any]]):
+def log_telemetry_snapshot(readings: Dict[str, Dict[str, Any]], bms_power_w: Optional[float] = None):
     """
     Log a 1-minute telemetry snapshot into sqlite telemetry_history table in local Pakistan Time (PKT).
     Format: YYYY-MM-DD HH:MM:SS
@@ -249,11 +249,58 @@ def log_telemetry_snapshot(readings: Dict[str, Dict[str, Any]]):
                 VALUES (?, 'all', ?, ?, ?, ?, ?, ?, ?, ?)
             """, (time_str, total_solar, total_load, total_grid, total_bat, avg_soc, avg_bat_v, max_grid_v, avg_temp))
 
+            if bms_power_w is not None:
+                conn.execute("""
+                    INSERT INTO telemetry_history 
+                    (timestamp, inverter_id, solar_w, load_w, grid_w, battery_w, battery_pct, battery_v, grid_v, temp_c)
+                    VALUES (?, 'bms', 0, 0, 0, ?, ?, ?, 0, ?)
+                """, (time_str, float(bms_power_w), avg_soc, avg_bat_v, avg_temp))
+
             conn.commit()
         finally:
             conn.close()
     except Exception as e:
         logger.error(f"Error logging telemetry snapshot: {e}")
+
+
+def query_bms_daily_totals(date_str: str) -> Dict[str, float]:
+    """
+    Calculate total kWh charged and total kWh discharged for a given date 
+    directly from 1-minute BMS RS485 power readings in SQLite.
+    """
+    try:
+        conn = get_db_connection()
+        try:
+            rows = conn.execute("""
+                SELECT battery_w FROM telemetry_history
+                WHERE timestamp LIKE ? AND inverter_id = 'bms'
+            """, (f"{date_str}%",)).fetchall()
+            
+            if not rows:
+                rows = conn.execute("""
+                    SELECT battery_w FROM telemetry_history
+                    WHERE timestamp LIKE ? AND inverter_id = 'all'
+                """, (f"{date_str}%",)).fetchall()
+            
+            charge_wh = 0.0
+            discharge_wh = 0.0
+            for r in rows:
+                w = float(r["battery_w"] or 0.0)
+                if w > 0:
+                    charge_wh += w / 60.0
+                elif w < 0:
+                    discharge_wh += abs(w) / 60.0
+                    
+            return {
+                "date": date_str,
+                "bms_charge_kwh": round(charge_wh / 1000.0, 2),
+                "bms_discharge_kwh": round(discharge_wh / 1000.0, 2)
+            }
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.error(f"Error computing BMS daily totals: {e}")
+        return {"date": date_str, "bms_charge_kwh": 0.0, "bms_discharge_kwh": 0.0}
 
 
 def update_lifetime_totals_and_calculate_daily(lifetime_readings: Dict[str, Dict[str, float]]):

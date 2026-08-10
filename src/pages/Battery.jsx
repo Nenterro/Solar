@@ -17,6 +17,7 @@ export default function Battery() {
   });
   const [historyData, setHistoryData] = useState([]);
   const [dailyScrapedTotals, setDailyScrapedTotals] = useState(null);
+  const [bmsTotals, setBmsTotals] = useState({ bms_charge_kwh: 0, bms_discharge_kwh: 0 });
   const [selectedDate, setSelectedDate] = useState(new Date());
   const [headerSlot, setHeaderSlot] = useState(null);
   const today = new Date();
@@ -30,13 +31,15 @@ export default function Battery() {
     const fetchHistoryAndTotals = async () => {
       const dateStr = format(selectedDate, 'yyyy-MM-dd');
       try {
-        const [histRes, totalsRes] = await Promise.all([
+        const [histRes, totalsRes, bmsTotalsRes] = await Promise.all([
           fetchFromBackend(`/api/history?date=${dateStr}&inverter=all&_t=${Date.now()}`),
-          fetchFromBackend(`/api/dess_totals?month=${dateStr.substring(0, 7)}&inverter=all`)
+          fetchFromBackend(`/api/dess_totals?month=${dateStr.substring(0, 7)}&inverter=all`),
+          fetchFromBackend(`/api/bms_totals?date=${dateStr}&_t=${Date.now()}`)
         ]);
         
         if (isMounted) {
           if (histRes.records) setHistoryData(histRes.records);
+          if (bmsTotalsRes) setBmsTotals(bmsTotalsRes);
           
           let dayObj = null;
           if (Array.isArray(totalsRes.totals)) {
@@ -62,7 +65,8 @@ export default function Battery() {
     // Poll the new RS485 endpoint every 5 seconds
     const fetchBatteryData = async () => {
       try {
-        const json = await fetchFromBackend('/api/battery');
+        const dateStr = format(selectedDate, 'yyyy-MM-dd');
+        const json = await fetchFromBackend(`/api/battery?date=${dateStr}`);
         setData(json);
       } catch (err) {
         console.error("Failed to fetch battery data", err);
@@ -72,7 +76,7 @@ export default function Battery() {
     fetchBatteryData();
     const interval = setInterval(fetchBatteryData, 5000);
     return () => clearInterval(interval);
-  }, []);
+  }, [selectedDate]);
 
   // Date Navigation
   const isNextDisabled = isSameDay(selectedDate, today);
@@ -82,9 +86,9 @@ export default function Battery() {
   };
   const dateFormattedLabel = format(selectedDate, 'EEEE, MMM d, yyyy');
 
-  // Calculate History Metrics
-  const totalChargeKwh = dailyScrapedTotals ? (dailyScrapedTotals.batteryCharge || 0) : 0;
-  const totalDischargeKwh = dailyScrapedTotals ? (dailyScrapedTotals.batteryDischarge || 0) : 0;
+  // Calculate History Metrics directly from Knox BMS RS485
+  const totalChargeKwh = bmsTotals?.bms_charge_kwh ?? (data?.bms_charge_kwh ?? 0);
+  const totalDischargeKwh = bmsTotals?.bms_discharge_kwh ?? (data?.bms_discharge_kwh ?? 0);
   let timeOnBatteryMins = 0;
 
   historyData.forEach(record => {

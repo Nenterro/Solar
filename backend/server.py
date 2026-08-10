@@ -50,9 +50,14 @@ def background_telemetry_loop():
                 readings = serial_reader_instance.poll_all_inverters()
                 if readings:
                     # ALWAYS override inverter SOC and voltage with reliable RS485 BMS data (zero fallback to inverter)
-                    bms_data = bms.get_latest_data()
-                    bms_soc = float(bms_data.get("soc", 0.0))
-                    bms_v = float(bms_data.get("voltage", 0.0))
+                bms_data = bms.get_latest_data()
+                bms_soc = float(bms_data.get("soc", 0.0))
+                bms_v = float(bms_data.get("voltage", 0.0))
+                bms_power_w = float(bms_data.get("power", 0.0))
+                if bms_data.get("state") == "Discharging":
+                    bms_power_w = -abs(bms_power_w)
+
+                if readings:
                     for inv_id in readings:
                         if 0.0 <= bms_soc <= 100.0 and bms_soc > 0:
                             readings[inv_id]["battery_capacity_pct"] = bms_soc
@@ -63,7 +68,7 @@ def background_telemetry_loop():
                 # Log to SQLite only once every 60 seconds to prevent DB bloat
                 if now_sec - last_db_log_time >= 60:
                     last_db_log_time = now_sec
-                    db.log_telemetry_snapshot(readings)
+                    db.log_telemetry_snapshot(readings, bms_power_w)
 
             # 2. Automatically poll hardware lifetime totals and calculate daily values
             now_dt = datetime.now()
@@ -118,10 +123,10 @@ def read_root():
     }
 
 @app.get("/api/battery")
-def get_battery():
+def get_battery(date: Optional[str] = Query(None)):
     """
     Returns real-time battery status directly from BMS RS485 (Voltage * BMS Current = BMS Power),
-    enriched only with average inverter temperature.
+    along with daily charge/discharge totals calculated from BMS RS485.
     """
     data = bms.get_latest_data()
     
@@ -138,6 +143,11 @@ def get_battery():
     else:
         data["state"] = "Idle"
         
+    target_date = date or datetime.now(db.PKT).strftime("%Y-%m-%d")
+    bms_totals = db.query_bms_daily_totals(target_date)
+    data["bms_charge_kwh"] = bms_totals["bms_charge_kwh"]
+    data["bms_discharge_kwh"] = bms_totals["bms_discharge_kwh"]
+
     try:
         readings = serial_reader_instance.readings_cache
         if readings:
@@ -148,6 +158,11 @@ def get_battery():
         logger.error(f"Error getting temp for BMS data: {e}")
         
     return data
+
+@app.get("/api/bms_totals")
+def get_bms_totals(date: Optional[str] = Query(None)):
+    target_date = date or datetime.now(db.PKT).strftime("%Y-%m-%d")
+    return db.query_bms_daily_totals(target_date)
 
 @app.get("/api/telemetry")
 def get_telemetry(inverter: str = Query("all")):
