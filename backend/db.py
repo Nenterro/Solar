@@ -180,6 +180,19 @@ def log_telemetry_snapshot(readings: Dict[str, Dict[str, Any]], bms_power_w: Opt
             now_pkt = datetime.now(PKT)
             time_str = now_pkt.strftime("%Y-%m-%d %H:%M:%S")
 
+            # Fetch REAL Battery SOC and Voltage from Knox BMS RS485
+            bms_soc = None
+            bms_v = None
+            try:
+                from battery_bms import bms
+                bms_data = bms.get_latest_data()
+                if bms_data.get("soc", 0) > 0:
+                    bms_soc = float(bms_data["soc"])
+                if bms_data.get("voltage", 0.0) > 0.0:
+                    bms_v = float(bms_data["voltage"])
+            except Exception:
+                pass
+
             # 1. Insert per-inverter rows
             valid_readings = {}
             for inv_id, r in readings.items():
@@ -191,8 +204,10 @@ def log_telemetry_snapshot(readings: Dict[str, Dict[str, Any]], bms_power_w: Opt
                 grid_kw = r.get("grid_power_kw", 0.0)
                 bat_kw = r.get("battery_power_kw", 0.0)
                 load_kw = r.get("ac_output_power_kw", 0.0)
-                soc_val = r.get("battery_capacity_pct", 0.0)
-                bat_v = r.get("battery_voltage", 0.0)
+                
+                # STRICT DIRECTIVE: Use Knox BMS RS485 SOC & Voltage ONLY (never inverter wires!)
+                soc_val = bms_soc if bms_soc is not None else r.get("battery_capacity_pct", 0.0)
+                bat_v = bms_v if bms_v is not None else r.get("battery_voltage", 0.0)
                 
                 # Modbus / Serial glitch filter (>100kW or SOC > 100% or battery_v > 70V is corrupted)
                 if abs(solar_kw) > 100.0 or abs(grid_kw) > 100.0 or abs(bat_kw) > 100.0 or abs(load_kw) > 100.0 or soc_val > 100.0 or soc_val < 0.0 or bat_v > 70.0:

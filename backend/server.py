@@ -123,19 +123,11 @@ def read_root():
 @app.get("/api/battery")
 def get_battery(date: Optional[str] = Query(None)):
     """
-    Returns real-time battery status directly from BMS RS485 (Voltage * BMS Current = BMS Power),
+    Returns real-time battery status strictly from Battery BMS RS485,
     along with daily charge/discharge totals calculated from BMS RS485.
     """
     data = bms.get_latest_data()
     
-    # Fallback to RS232 inverter telemetry if RS485 BMS is unavailable or returning zeros
-    inv_data = serial_reader_instance.get_telemetry_for_selection("all")
-    if inv_data:
-        if (data.get("soc", 0) == 0 or data.get("soc") is None) and inv_data.get("battery_capacity_pct"):
-            data["soc"] = int(inv_data["battery_capacity_pct"])
-        if (data.get("voltage", 0.0) == 0.0 or data.get("voltage") is None) and inv_data.get("battery_voltage"):
-            data["voltage"] = inv_data["battery_voltage"]
-
     # Calculate BMS battery power directly: P_bms = V_bms * I_bms
     bms_v = float(data.get("voltage", 0.0))
     bms_i = float(data.get("current", 0.0))
@@ -174,7 +166,21 @@ def get_bms_totals(date: Optional[str] = Query(None)):
 def get_telemetry(inverter: str = Query("all")):
     global last_api_access_time
     last_api_access_time = time.time()
-    return serial_reader_instance.get_telemetry_for_selection(inverter)
+    telemetry_data = serial_reader_instance.get_telemetry_for_selection(inverter)
+
+    # Strictly override SOC and Battery Voltage using Battery BMS RS485 data ONLY
+    try:
+        bms_data = bms.get_latest_data()
+        bms_soc = bms_data.get("soc", 0)
+        bms_v = bms_data.get("voltage", 0.0)
+        if bms_soc > 0:
+            telemetry_data["battery_capacity_pct"] = int(bms_soc)
+        if bms_v > 0:
+            telemetry_data["battery_voltage"] = float(bms_v)
+    except Exception as e:
+        logger.error(f"Error overriding telemetry SOC with BMS RS485: {e}")
+
+    return telemetry_data
 
 @app.get("/api/history")
 def get_history(
