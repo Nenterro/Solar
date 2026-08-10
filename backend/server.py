@@ -128,6 +128,14 @@ def get_battery(date: Optional[str] = Query(None)):
     """
     data = bms.get_latest_data()
     
+    # Fallback to RS232 inverter telemetry if RS485 BMS is unavailable or returning zeros
+    inv_data = serial_reader_instance.get_telemetry_for_selection("all")
+    if inv_data:
+        if (data.get("soc", 0) == 0 or data.get("soc") is None) and inv_data.get("battery_capacity_pct"):
+            data["soc"] = int(inv_data["battery_capacity_pct"])
+        if (data.get("voltage", 0.0) == 0.0 or data.get("voltage") is None) and inv_data.get("battery_voltage"):
+            data["voltage"] = inv_data["battery_voltage"]
+
     # Calculate BMS battery power directly: P_bms = V_bms * I_bms
     bms_v = float(data.get("voltage", 0.0))
     bms_i = float(data.get("current", 0.0))
