@@ -420,27 +420,36 @@ class SerialInverterReader:
         qflag_resp = ""
 
         with self.serial_lock:
-            try:
-                ser = serial.Serial(port, 2400, timeout=1.5)
+            for attempt in range(1, 4):
+                try:
+                    ser = serial.Serial(port, 2400, timeout=1.8)
 
-                # 1. Query QPIRI (Rating & Settings Information)
-                cb = b'QPIRI'
-                ser.reset_input_buffer()
-                ser.write(cb + crc16_voltronic(cb) + b'\r')
-                qpiri_resp = ser.read_until(b'\r', size=150).decode('ascii', errors='ignore').strip()
+                    # 1. Query QPIRI (Rating & Settings Information)
+                    cb = b'QPIRI'
+                    ser.reset_input_buffer()
+                    ser.write(cb + crc16_voltronic(cb) + b'\r')
+                    res = ser.read_until(b'\r', size=150).decode('ascii', errors='ignore').strip()
 
-                time.sleep(0.1)
+                    if res.startswith('(') and len(res.split()) >= 20:
+                        qpiri_resp = res
+                        time.sleep(0.1)
 
-                # 2. Query QFLAG (Enable/Disable Flags including Feed-to-Grid 'b')
-                cb = b'QFLAG'
-                ser.reset_input_buffer()
-                ser.write(cb + crc16_voltronic(cb) + b'\r')
-                qflag_resp = ser.read_until(b'\r', size=150).decode('ascii', errors='ignore').strip()
+                        # 2. Query QFLAG (Enable/Disable Flags including Feed-to-Grid 'b')
+                        cb = b'QFLAG'
+                        ser.reset_input_buffer()
+                        ser.write(cb + crc16_voltronic(cb) + b'\r')
+                        qflag_resp = ser.read_until(b'\r', size=150).decode('ascii', errors='ignore').strip()
+                        
+                        ser.close()
+                        break
+                    
+                    ser.close()
+                except Exception as e:
+                    logger.warning(f"Attempt {attempt}/3 querying serial port {port} for {inverter_id} failed: {e}")
+                time.sleep(0.15)
 
-                ser.close()
-            except Exception as e:
-                logger.error(f"Error querying serial port {port} for {inverter_id}: {e}")
-                return {"error": str(e)}
+        if not qpiri_resp:
+            return {"error": f"Failed to retrieve settings from inverter '{inverter_id}' after 3 attempts"}
 
         out_code = "0"
         charger_code = "0"

@@ -92,30 +92,40 @@ export default function InverterSettings() {
     setTimeout(() => setToast(null), 4000);
   };
 
-  // Load inverter settings from backend
+  // Load inverter settings from backend with automatic retry
   const loadSettings = async () => {
     setIsLoading(true);
-    try {
-      const data = await fetchFromBackend(`/api/inverter_settings?inverter=${selectedInverter}&_t=${Date.now()}`);
-      if (data && !data.error) {
-        setSettingsData(data);
-        if (data.voltage_thresholds) {
-          setVoltageForm({
-            back_to_grid_voltage: data.voltage_thresholds.back_to_grid_voltage?.value || 52.0,
-            back_to_discharge_voltage: data.voltage_thresholds.back_to_discharge_voltage?.value || 54.0,
-            battery_cut_off_voltage: data.voltage_thresholds.battery_cut_off_voltage?.value || 46.0,
-            battery_voltage_turn_off_ac2: data.voltage_thresholds.battery_voltage_turn_off_ac2?.value || 56.5,
-            battery_voltage_turn_on_ac2: data.voltage_thresholds.battery_voltage_turn_on_ac2?.value || 57.0,
-          });
+    let success = false;
+
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const data = await fetchFromBackend(`/api/inverter_settings?inverter=${selectedInverter}&_t=${Date.now()}`);
+        if (data && !data.error) {
+          setSettingsData(data);
+          if (data.voltage_thresholds) {
+            setVoltageForm({
+              back_to_grid_voltage: data.voltage_thresholds.back_to_grid_voltage?.value || 52.0,
+              back_to_discharge_voltage: data.voltage_thresholds.back_to_discharge_voltage?.value || 54.0,
+              battery_cut_off_voltage: data.voltage_thresholds.battery_cut_off_voltage?.value || 46.0,
+              battery_voltage_turn_off_ac2: data.voltage_thresholds.battery_voltage_turn_off_ac2?.value || 56.5,
+              battery_voltage_turn_on_ac2: data.voltage_thresholds.battery_voltage_turn_on_ac2?.value || 57.0,
+            });
+          }
+          success = true;
+          break;
         }
-      } else {
-        showToast(data?.error || 'Failed to query inverter settings', 'error');
+      } catch (err) {
+        console.warn(`Attempt ${attempt} to fetch inverter settings failed:`, err);
       }
-    } catch (err) {
-      showToast('Error connecting to inverter serial interface', 'error');
-    } finally {
-      setIsLoading(false);
+      if (attempt < 3) {
+        await new Promise(r => setTimeout(r, 600));
+      }
     }
+
+    if (!success && !settingsData) {
+      showToast('Error connecting to inverter serial interface', 'error');
+    }
+    setIsLoading(false);
   };
 
   useEffect(() => {
