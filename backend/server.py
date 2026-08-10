@@ -120,35 +120,32 @@ def read_root():
 @app.get("/api/battery")
 def get_battery():
     """
-    Returns the real-time battery status straight from the BMS via RS485,
-    enriched with current and temperature from the inverter telemetry since the 
-    Knox BMS RS485 has a fixed payload omitting those fields.
+    Returns real-time battery status directly from BMS RS485 (Voltage * BMS Current = BMS Power),
+    enriched only with average inverter temperature.
     """
     data = bms.get_latest_data()
     
+    # Calculate BMS battery power directly: P_bms = V_bms * I_bms
+    bms_v = float(data.get("voltage", 0.0))
+    bms_i = float(data.get("current", 0.0))
+    bms_power = round(bms_v * bms_i, 2)
+    data["power"] = bms_power
+    
+    if bms_i > 0.5:
+        data["state"] = "Charging"
+    elif bms_i < -0.5:
+        data["state"] = "Discharging"
+    else:
+        data["state"] = "Idle"
+        
     try:
-        # Fallback to inverter aggregate telemetry for current and temperature
         readings = serial_reader_instance.readings_cache
         if readings:
-            total_charge = sum(r.get("battery_charge_current", 0.0) for r in readings.values() if "battery_charge_current" in r)
-            total_discharge = sum(r.get("battery_discharge_current", 0.0) for r in readings.values() if "battery_discharge_current" in r)
-            
-            net_current = total_charge - total_discharge
-            data["current"] = net_current
-            data["power"] = round(data["voltage"] * net_current, 2)
-            
-            if net_current > 0.5:
-                data["state"] = "Charging"
-            elif net_current < -0.5:
-                data["state"] = "Discharging"
-            else:
-                data["state"] = "Idle"
-            
-            temps = [r.get("inverter_temp_c", 0.0) for r in readings.values() if "inverter_temp_c" in r]
+            temps = [r.get("inverter_temp_c", 0.0) for r in readings.values() if r.get("inverter_temp_c", 0.0) > 0]
             if temps:
                 data["temperature"] = round(sum(temps) / len(temps), 1)
     except Exception as e:
-        logger.error(f"Error enriching BMS data: {e}")
+        logger.error(f"Error getting temp for BMS data: {e}")
         
     return data
 
