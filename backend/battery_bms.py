@@ -3,13 +3,14 @@ import time
 import threading
 import serial
 import struct
+import glob
 
 logger = logging.getLogger(__name__)
 
 fast_poll_active = False
 
 class BatteryBMS:
-    def __init__(self, port="/dev/ttyUSB0", baudrate=9600):
+    def __init__(self, port="/dev/ttyUSB3", baudrate=9600):
         self.port = port
         self.baudrate = baudrate
         self.lock = threading.Lock()
@@ -28,7 +29,37 @@ class BatteryBMS:
         }
         self.last_valid_soc = None
         self.last_valid_voltage = None
-        
+
+    def _find_bms_port(self) -> str:
+        """Auto-detect Knox BMS RS485 port among available USB serial devices."""
+        candidate_ports = sorted(glob.glob('/dev/ttyUSB*'))
+        # Put self.port first
+        if self.port in candidate_ports:
+            candidate_ports.remove(self.port)
+            candidate_ports.insert(0, self.port)
+
+        req = bytearray(struct.pack('>BBHH', 1, 3, 50, 10))
+        crc = 0xFFFF
+        for b in req:
+            crc = (crc >> 1) ^ 0xA001 if (crc ^ b) & 1 else (crc >> 1)
+        full_cmd = req + struct.pack('<H', crc)
+
+        for p in candidate_ports:
+            try:
+                s = serial.Serial(p, self.baudrate, timeout=0.8)
+                s.reset_input_buffer()
+                s.write(full_cmd)
+                time.sleep(0.15)
+                res = s.read(1024)
+                s.close()
+                if len(res) >= 20 and res[0] == 0x01 and res[1] == 0x03:
+                    logger.info(f"Auto-detected Knox BMS RS485 on port {p}")
+                    self.port = p
+                    return p
+            except Exception:
+                pass
+        return self.port
+
     def poll_battery(self):
         """
         Polls the Knox Powerwall battery over RS485 with up to 3 retries.
@@ -37,85 +68,96 @@ class BatteryBMS:
         """
         with self.lock:
             try:
-                s = serial.Serial(self.port, self.baudrate, timeout=1.0)
-                try:
-                    # Query 10 registers starting at 50 (0x0032)
-                    # Reg 50 = Voltage, Reg 51 = SOC, Reg 52/53 = Capacity
-                    req = bytearray(struct.pack('>BBHH', 1, 3, 50, 10))
-                    crc = 0xFFFF
-                    for b in req:
-                        crc ^= b
-                        for _ in range(8):
-                            crc = (crc >> 1) ^ 0xA001 if crc & 1 else crc >> 1
-                    
-                    full_cmd = req + struct.pack('<H', crc)
+                # 1. Try current port or auto-detect if necessary
+                req = bytearray(struct.pack('>BBHH', 1, 3, 50, 10))
+                crc = 0xFFFF
+                for b in req:
+                    crc ^= b
+                    for _ in range(8):
+                        crc = (crc >> 1) ^ 0xA001 if crc & 1 else crc >> 1
+                full_cmd = req + struct.pack('<H', crc)
 
-                    for attempt in range(3):
-                        s.reset_input_buffer()
-                        s.write(full_cmd)
-                        time.sleep(0.2)
-                        res = s.read(1024)
+                success = False
+                ports_to_try = [self.port]
 
-                        if len(res) >= 20 and res[0] == 0x01 and res[1] == 0x03:
-                            # Extract data
-                            voltage_raw = struct.unpack('>H', res[4:6])[0]
-                            voltage = voltage_raw / 10.0
-                            soc_raw = struct.unpack('>H', res[6:8])[0]
-                            capacity_raw = struct.unpack('>I', res[8:12])[0]
-                            capacity_ah = capacity_raw / 1000.0
-                            current_raw = struct.unpack('>h', res[12:14])[0]
-                            current = current_raw / 10.0
+                for target_port in ports_to_try:
+                    try:
+                        s = serial.Serial(target_port, self.baudrate, timeout=1.0)
+                        try:
+                            for attempt in range(3):
+                                s.reset_input_buffer()
+                                s.write(full_cmd)
+                                time.sleep(0.2)
+                                res = s.read(1024)
 
-                            # Strict Bounds Validation for Knox BMS RS485 Response
-                            if soc_raw > 100 or soc_raw < 0 or voltage > 70.0 or voltage < 35.0:
-                                logger.warning(f"BMS RS485 attempt {attempt+1} invalid: SOC={soc_raw}%, V={voltage}V. Retrying...")
-                                time.sleep(0.15)
-                                continue
+                                if len(res) >= 20 and res[0] == 0x01 and res[1] == 0x03:
+                                    voltage_raw = struct.unpack('>H', res[4:6])[0]
+                                    voltage = voltage_raw / 10.0
+                                    soc_raw = struct.unpack('>H', res[6:8])[0]
+                                    capacity_raw = struct.unpack('>I', res[8:12])[0]
+                                    capacity_ah = capacity_raw / 1000.0
+                                    current_raw = struct.unpack('>h', res[12:14])[0]
+                                    current = current_raw / 10.0
 
-                            # Rate-of-change glitch filter: Battery SOC cannot physically drop/jump > 5% in < 5 mins
-                            now_t = time.time()
-                            if self.last_valid_soc is not None and (now_t - getattr(self, 'last_soc_time', 0)) < 300:
-                                if abs(soc_raw - self.last_valid_soc) > 5.0:
-                                    logger.warning(f"BMS RS485 attempt {attempt+1} SOC glitch rejected: {soc_raw}% vs last valid {self.last_valid_soc}%. Retrying...")
+                                    if soc_raw > 100 or soc_raw < 0 or voltage > 70.0 or voltage < 35.0:
+                                        time.sleep(0.15)
+                                        continue
+
+                                    now_t = time.time()
+                                    if self.last_valid_soc is not None and (now_t - getattr(self, 'last_soc_time', 0)) < 300:
+                                        if abs(soc_raw - self.last_valid_soc) > 5.0:
+                                            logger.warning(f"BMS RS485 attempt {attempt+1} SOC glitch rejected: {soc_raw}% vs last valid {self.last_valid_soc}%. Retrying...")
+                                            time.sleep(0.15)
+                                            continue
+
+                                    power = voltage * current
+                                    self.latest_data["soc"] = int(soc_raw)
+                                    self.latest_data["voltage"] = voltage
+                                    self.latest_data["capacity_ah"] = capacity_ah
+                                    self.latest_data["current"] = current
+                                    self.latest_data["power"] = round(power, 2)
+                                    
+                                    self.last_valid_soc = int(soc_raw)
+                                    self.last_soc_time = now_t
+                                    self.last_valid_voltage = voltage
+                                    
+                                    if current > 0.5:
+                                        self.latest_data["state"] = "Charging"
+                                    elif current < -0.5:
+                                        self.latest_data["state"] = "Discharging"
+                                    else:
+                                        self.latest_data["state"] = "Idle"
+                                        
+                                    self.latest_data["status"] = "Connected"
+                                    self.latest_data["last_updated"] = time.time()
+                                    success = True
+                                    return
+                                else:
                                     time.sleep(0.15)
-                                    continue
+                        finally:
+                            s.close()
+                    except Exception:
+                        pass
 
-                            power = voltage * current
-                            self.latest_data["soc"] = int(soc_raw)
-                            self.latest_data["voltage"] = voltage
-                            self.latest_data["capacity_ah"] = capacity_ah
-                            self.latest_data["current"] = current
-                            self.latest_data["power"] = round(power, 2)
-                            
-                            self.last_valid_soc = int(soc_raw)
-                            self.last_soc_time = now_t
-                            self.last_valid_voltage = voltage
-                            
-                            if current > 0.5:
-                                self.latest_data["state"] = "Charging"
-                            elif current < -0.5:
-                                self.latest_data["state"] = "Discharging"
-                            else:
-                                self.latest_data["state"] = "Idle"
-                                
-                            self.latest_data["status"] = "Connected"
-                            self.latest_data["last_updated"] = time.time()
-                            return # Successful poll
-                        else:
-                            time.sleep(0.15)
+                # If primary port failed, attempt auto-discovery once
+                if not success:
+                    found_port = self._find_bms_port()
+                    if found_port != self.port:
+                        logger.info(f"Retrying poll on newly discovered Knox BMS port: {found_port}")
 
-                    self.latest_data["status"] = "No Data / Invalid Response"
-                    # Preserve last valid SOC if all attempts failed or returned glitches
-                    if self.last_valid_soc is not None:
-                        self.latest_data["soc"] = self.last_valid_soc
+                self.latest_data["status"] = "No Data / Invalid Response"
+                if self.last_valid_soc is not None:
+                    self.latest_data["soc"] = self.last_valid_soc
+                if self.last_valid_voltage is not None:
+                    self.latest_data["voltage"] = self.last_valid_voltage
 
-                finally:
-                    s.close()
             except Exception as e:
                 logger.error(f"Error polling battery: {e}")
                 self.latest_data["status"] = f"Error: {str(e)}"
                 if self.last_valid_soc is not None:
                     self.latest_data["soc"] = self.last_valid_soc
+                if self.last_valid_voltage is not None:
+                    self.latest_data["voltage"] = self.last_valid_voltage
 
     def get_latest_data(self):
         with self.lock:

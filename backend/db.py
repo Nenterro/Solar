@@ -827,6 +827,8 @@ def query_daily_history(date_str: str, inverter_id: str = "all") -> List[Dict[st
             """, (f"{date_str}%", inverter_id)).fetchall()
 
             results = []
+            last_known_graph_soc = None
+
             for r in rows:
                 ts_str = r["timestamp"]  # "YYYY-MM-DD HH:MM:SS"
                 time_label = ts_str[11:16] if len(ts_str) >= 16 else ts_str
@@ -836,8 +838,12 @@ def query_daily_history(date_str: str, inverter_id: str = "all") -> List[Dict[st
                 grid_kw = round(r["grid_w"] / 1000.0, 2)
                 bat_kw = round(r["battery_w"] / 1000.0, 2)
 
-                # STRICT: Prefer Knox BMS RS485 SOC for battery level
-                raw_soc = bms_soc_map.get(time_label, float(r["battery_pct"] or 0.0))
+                # STRICT: Use Knox BMS RS485 SOC ONLY (never fall back to inverter wire SOC!)
+                if time_label in bms_soc_map:
+                    last_known_graph_soc = bms_soc_map[time_label]
+
+                raw_soc = last_known_graph_soc if last_known_graph_soc is not None else 0.0
+
                 if abs(solar_kw) > 100.0 or abs(load_kw) > 100.0 or abs(grid_kw) > 100.0 or abs(bat_kw) > 100.0 or raw_soc > 100.0:
                     continue
 
