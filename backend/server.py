@@ -32,10 +32,16 @@ app.add_middleware(
 
 # Background 1-minute telemetry logger thread
 def background_telemetry_loop():
-    global last_api_access_time
-    logger.info("Starting background dynamic telemetry logging thread...")
+    logger.info("Starting background 1-minute telemetry logging thread...")
     last_dess_poll_time = 0
     last_db_log_time = 0
+    
+    # Ensure BMS poller is running
+    try:
+        from battery_bms import start_bms_poller
+        start_bms_poller()
+    except Exception as e:
+        logger.error(f"Failed to start BMS poller: {e}")
 
     while True:
         try:
@@ -46,14 +52,17 @@ def background_telemetry_loop():
             battery_bms.fast_poll_active = user_connected
 
             if user_connected or (now_sec - last_db_log_time >= 60):
-                # 1. Capture RS232 telemetry snapshot from local USB inverters
-                readings = serial_reader_instance.poll_all_inverters()
+                # Poll BMS RS485
+                bms.poll_battery()
                 bms_data = bms.get_latest_data()
                 bms_soc = float(bms_data.get("soc", 0.0))
                 bms_v = float(bms_data.get("voltage", 0.0))
                 bms_power_w = float(bms_data.get("power", 0.0))
                 if bms_data.get("state") == "Discharging":
                     bms_power_w = -abs(bms_power_w)
+
+                # Capture RS232 telemetry snapshot from local USB inverters
+                readings = serial_reader_instance.poll_all_inverters()
 
                 if readings:
                     for inv_id in readings:
