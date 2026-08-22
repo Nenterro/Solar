@@ -12,6 +12,11 @@ services:
       - "8000:8000"
     # CRITICAL: Grant privileged hardware access and map host /dev for USB HID devices (/dev/hidraw*)
     privileged: true
+    # Explicit resolvers: the container could not resolve the DESSMonitor API
+    # through the host's default DNS.
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
     environment:
       # Shared secret required by every write endpoint (inverter settings,
       # automations, backfill, reset, restart). Leave unset and those endpoints
