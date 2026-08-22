@@ -31,11 +31,9 @@ MAX_GAP_SECONDS = 900.0
 MAX_DAILY_KWH_PER_INVERTER = 150.0
 MAX_DAILY_KWH_ALL = 450.0
 
-# How far the hardware total may exceed the 1-minute integration before it is
-# treated as a corrupt register rather than a more accurate reading. Set above
-# the worst realistic backend outage (which makes the integration under-report)
-# and well below the several-fold error a poisoned baseline produces.
-HW_INTEGRATION_RATIO_LIMIT = 2.0
+# Fraction of a day's minutes that must carry a telemetry sample before the
+# 1-minute integration is considered a complete record of that day.
+MIN_INTEGRATION_COVERAGE = 0.90
 
 # Largest plausible single-day jump in a lifetime register. A single inverter
 # cannot exceed its own daily ceiling, so reuse that rather than a looser value:
@@ -579,6 +577,23 @@ def _sample_durations(rows: List[sqlite3.Row]) -> List[float]:
     return [d if d is not None else typical for d in durations]
 
 
+def _integration_coverage(rows: List[sqlite3.Row], date_str: str) -> float:
+    """
+    Fraction of the day's elapsed minutes that carry a telemetry sample.
+
+    This is what separates "the integration is a complete record" from "the
+    backend was down for part of the day, so the integration must under-report".
+    """
+    if not rows:
+        return 0.0
+    now_pkt = datetime.now(PKT)
+    if date_str == now_pkt.strftime("%Y-%m-%d"):
+        elapsed = now_pkt.hour * 60 + now_pkt.minute + 1
+    else:
+        elapsed = 1440
+    return len(rows) / float(max(1, elapsed))
+
+
 def integrate_samples(rows: List[sqlite3.Row]) -> Dict[str, float]:
     """Integrate power samples (W) into energy (kWh) using real sample spacing."""
     totals = {"solar": 0.0, "load": 0.0, "gridImport": 0.0,
@@ -757,9 +772,13 @@ def update_lifetime_totals_and_calculate_daily(lifetime_readings: Dict[str, Dict
                         daily[key] = keep
                         continue
 
-                    # Lifetime counters only increase, so today's total can never
-                    # shrink; a smaller value means a corrupt frame.
-                    daily[key] = max(keep, round(delta, 1))
+                    # Take the delta as-is. Never ratchet with max(keep, ...):
+                    # a single high-but-plausible frame would then be latched in
+                    # for the rest of the day with no way to recover, which is
+                    # how inv1's load total reached 33.5 kWh against a real 19.7.
+                    # A failed read is already handled above by holding the
+                    # previous value, so nothing here needs protecting from zero.
+                    daily[key] = round(delta, 1)
 
                 daily_s = daily["solar"]
                 daily_l = daily["load"]
@@ -971,45 +990,56 @@ def _daily_total_for_inverter(date_str: str, inverter_id: str) -> Dict[str, Any]
                 return {"time": date_str, "source": "integrated",
                         **{k: round(final[k], 1) for k in metrics}}
 
-            # Cross-check the hardware row against the integration. Before the
-            # baseline handling was fixed, a failed register read was stored as
-            # a 0.0 start-of-day value, so that day's "total" became the entire
-            # lifetime counter -- large, but not always large enough to trip the
-            # absolute ceiling (inv3 recorded 140 kWh on 2026-08-14 against a
-            # real ~22). Those rows are still in the database for past days.
+            # Choose between the two sources by how complete the 1-minute record
+            # is, not by how far apart they are.
             #
-            # The two sources fail in opposite directions: a poisoned baseline
-            # inflates hardware several-fold, while the integration can only
-            # under-report, and then only for the time the backend was down. So
-            # a hardware figure more than double the integrated one is treated
-            # as corrupt; anything closer stays on hardware, which is the more
-            # accurate source and tolerates the gaps an outage leaves behind.
-            integrated = integrate_samples(_fetch_samples(conn, date_str, inverter_id))
-            implausible = []
-            for k in metrics:
-                if integrated[k] <= 0.5:
-                    continue
-                # Too high: a poisoned baseline inflating the register delta.
-                # Too low: a register that failed to read and was held at zero
-                # while the rest of the row stayed plausible -- inv1 shows solar
-                # 0.0 alongside battery_charge 4.0 on 2026-08-19. Hardware
-                # counts everything the inverter did, so it can legitimately
-                # exceed the integration after an outage, but it can never fall
-                # far below it.
-                if (hw[k] > integrated[k] * HW_INTEGRATION_RATIO_LIMIT
-                        or hw[k] < integrated[k] / HW_INTEGRATION_RATIO_LIMIT):
-                    implausible.append(k)
-            if implausible:
-                logger.warning(
-                    f"Hardware totals for {inverter_id} on {date_str} disagree with the "
-                    f"1-minute integration on {implausible} "
-                    f"(e.g. {implausible[0]}: hardware {hw[implausible[0]]} vs integrated "
-                    f"{integrated[implausible[0]]:.1f} kWh); "
-                    f"using the integration."
-                )
+            # Checked against DESSMonitor for 2026-08-22, the integration matched
+            # the cloud figures on every metric (inv2 load 59.3 vs 59.4, import
+            # 33.2 vs 34.2) while the register-derived totals did not (85.6 and
+            # 65.4). QET and QFT track real energy, but the QLT and QGT deltas
+            # run well ahead of it, so "hardware is authoritative" does not hold
+            # for every register on this equipment.
+            #
+            # The integration's only real weakness is missing time, and that is
+            # directly measurable: when samples cover the day, it is a complete
+            # record and is used. When the backend was down for a meaningful part
+            # of the day, the lifetime registers are the only source that saw the
+            # missing hours, so they are used instead.
+            samples = _fetch_samples(conn, date_str, inverter_id)
+            coverage = _integration_coverage(samples, date_str)
+            integrated = integrate_samples(samples)
+
+            if coverage >= MIN_INTEGRATION_COVERAGE and any(integrated[k] > 0.0 for k in metrics):
                 final, source = integrated, "integrated"
             else:
-                final, source = hw, "hardware"
+                # Falling back to the registers, but they still have to be
+                # credible against whatever the integration did capture. The
+                # samples that exist put a floor under the day's real energy,
+                # and the time they miss puts a ceiling on how far the registers
+                # may exceed them: at most as much again as the uncovered
+                # fraction could hold, with margin.
+                headroom = (1.0 / coverage if coverage > 0.05 else 20.0) * 1.5
+                suspect = [
+                    k for k in metrics
+                    if integrated[k] > 0.5 and (
+                        hw[k] > integrated[k] * headroom or hw[k] < integrated[k] * 0.8
+                    )
+                ]
+                if suspect:
+                    logger.warning(
+                        f"Hardware totals for {inverter_id} on {date_str} are not credible on "
+                        f"{suspect} at {coverage:.0%} telemetry coverage "
+                        f"(e.g. {suspect[0]}: hardware {hw[suspect[0]]} vs integrated "
+                        f"{integrated[suspect[0]]:.1f} kWh); using the integration."
+                    )
+                    final, source = integrated, "integrated"
+                else:
+                    if samples:
+                        logger.info(
+                            f"Telemetry covers only {coverage:.0%} of {date_str} for {inverter_id}; "
+                            f"using the hardware lifetime registers."
+                        )
+                    final, source = hw, "hardware"
 
             return {
                 "time": date_str,
