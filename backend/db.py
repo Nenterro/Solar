@@ -31,9 +31,17 @@ MAX_GAP_SECONDS = 900.0
 MAX_DAILY_KWH_PER_INVERTER = 150.0
 MAX_DAILY_KWH_ALL = 450.0
 
-# Largest plausible single-day jump in a lifetime register, used to reject a
-# corrupt baseline or a counter reset.
-MAX_LIFETIME_DELTA_KWH = 300.0
+# How far the hardware total may exceed the 1-minute integration before it is
+# treated as a corrupt register rather than a more accurate reading. Set above
+# the worst realistic backend outage (which makes the integration under-report)
+# and well below the several-fold error a poisoned baseline produces.
+HW_INTEGRATION_RATIO_LIMIT = 2.0
+
+# Largest plausible single-day jump in a lifetime register. A single inverter
+# cannot exceed its own daily ceiling, so reuse that rather than a looser value:
+# a stale or corrupt baseline otherwise yields a "day" of several hundred kWh
+# that is still small enough to pass a laxer check.
+MAX_LIFETIME_DELTA_KWH = MAX_DAILY_KWH_PER_INVERTER
 
 # Days of 1-minute telemetry to retain. 0 keeps everything. Daily/monthly/yearly
 # figures live in daily_totals and are never purged by this.
@@ -866,7 +874,38 @@ def save_daily_totals(records: List[Dict[str, Any]], inverter_id: str = "all"):
         logger.error(f"Error saving daily totals: {e}")
 
 
+METRIC_KEYS = ("solar", "load", "gridImport", "gridExport", "batteryCharge", "batteryDischarge")
+
+
 def get_combined_daily_total(date_str: str, inverter_id: str = "all") -> Dict[str, Any]:
+    """
+    Daily totals for one date and one inverter selection.
+
+    "all" is the sum of the individually validated inverters rather than a
+    separately stored aggregate row. The stored row is written in the same pass
+    that computes the per-inverter figures, so a bad reading on one inverter used
+    to propagate into it -- and because the whole-plant sanity ceiling is
+    necessarily three times looser, a value that was rejected per inverter could
+    still pass as a plant total. Summing validated parts also guarantees the
+    plant figure equals inv1 + inv2 + inv3, which the stored row did not.
+    """
+    if inverter_id == "all":
+        parts = [_daily_total_for_inverter(date_str, inv) for inv in ("inv1", "inv2", "inv3")]
+        if any(any(p[k] > 0.0 for k in METRIC_KEYS) for p in parts):
+            sources = {p["source"] for p in parts}
+            return {
+                "time": date_str,
+                "source": sources.pop() if len(sources) == 1 else "mixed",
+                **{k: round(sum(p[k] for p in parts), 1) for k in METRIC_KEYS},
+            }
+        # No per-inverter data at all: fall back to a stored plant row, which is
+        # what DESSMonitor backfill writes for older dates.
+        return _daily_total_for_inverter(date_str, "all")
+
+    return _daily_total_for_inverter(date_str, inverter_id)
+
+
+def _daily_total_for_inverter(date_str: str, inverter_id: str) -> Dict[str, Any]:
     """
     Return the daily energy totals for one date and one inverter selection.
 
@@ -886,7 +925,7 @@ def get_combined_daily_total(date_str: str, inverter_id: str = "all") -> Dict[st
     day. The caps here exist only to reject corrupt register frames and sit far
     above any physically achievable daily total.
     """
-    metrics = ("solar", "load", "gridImport", "gridExport", "batteryCharge", "batteryDischarge")
+    metrics = METRIC_KEYS
     try:
         conn = get_db_connection()
         try:
@@ -922,14 +961,55 @@ def get_combined_daily_total(date_str: str, inverter_id: str = "all") -> Dict[st
             # discharge today, say) would otherwise fall through to the
             # integration and pick up sensor noise. Never take max() of the two
             # either -- that biases every figure upwards.
-            # A rejected register means the whole row is suspect, so the day
-            # falls back to the integration rather than reporting a zero for the
-            # corrupt metric alongside good values for the rest.
-            if not hw_corrupt and any(hw[k] > 0.0 for k in metrics):
-                final, source = hw, "hardware"
-            else:
+            has_hw = any(hw[k] > 0.0 for k in metrics)
+
+            # A register rejected by the absolute ceiling makes the whole row
+            # suspect, so the day falls back to the integration rather than
+            # reporting a zero for the corrupt metric beside good values.
+            if hw_corrupt or not has_hw:
                 final = integrate_samples(_fetch_samples(conn, date_str, inverter_id))
-                source = "integrated"
+                return {"time": date_str, "source": "integrated",
+                        **{k: round(final[k], 1) for k in metrics}}
+
+            # Cross-check the hardware row against the integration. Before the
+            # baseline handling was fixed, a failed register read was stored as
+            # a 0.0 start-of-day value, so that day's "total" became the entire
+            # lifetime counter -- large, but not always large enough to trip the
+            # absolute ceiling (inv3 recorded 140 kWh on 2026-08-14 against a
+            # real ~22). Those rows are still in the database for past days.
+            #
+            # The two sources fail in opposite directions: a poisoned baseline
+            # inflates hardware several-fold, while the integration can only
+            # under-report, and then only for the time the backend was down. So
+            # a hardware figure more than double the integrated one is treated
+            # as corrupt; anything closer stays on hardware, which is the more
+            # accurate source and tolerates the gaps an outage leaves behind.
+            integrated = integrate_samples(_fetch_samples(conn, date_str, inverter_id))
+            implausible = []
+            for k in metrics:
+                if integrated[k] <= 0.5:
+                    continue
+                # Too high: a poisoned baseline inflating the register delta.
+                # Too low: a register that failed to read and was held at zero
+                # while the rest of the row stayed plausible -- inv1 shows solar
+                # 0.0 alongside battery_charge 4.0 on 2026-08-19. Hardware
+                # counts everything the inverter did, so it can legitimately
+                # exceed the integration after an outage, but it can never fall
+                # far below it.
+                if (hw[k] > integrated[k] * HW_INTEGRATION_RATIO_LIMIT
+                        or hw[k] < integrated[k] / HW_INTEGRATION_RATIO_LIMIT):
+                    implausible.append(k)
+            if implausible:
+                logger.warning(
+                    f"Hardware totals for {inverter_id} on {date_str} disagree with the "
+                    f"1-minute integration on {implausible} "
+                    f"(e.g. {implausible[0]}: hardware {hw[implausible[0]]} vs integrated "
+                    f"{integrated[implausible[0]]:.1f} kWh); "
+                    f"using the integration."
+                )
+                final, source = integrated, "integrated"
+            else:
+                final, source = hw, "hardware"
 
             return {
                 "time": date_str,
