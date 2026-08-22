@@ -3,7 +3,6 @@ import { createPortal } from 'react-dom';
 import { LayoutDashboard } from 'lucide-react';
 import EnergyFlowDiagram from '../components/EnergyFlowDiagram';
 import InverterSelector from '../components/InverterSelector';
-import { usePocketBase } from '../context/PocketBaseContext';
 import { useTelemetry } from '../context/TelemetryContext';
 import './Dashboard.css';
 
@@ -13,7 +12,6 @@ export const CANDIDATE_BACKEND_URLS = [
 ].filter(Boolean);
 
 export default function Dashboard() {
-  const { isConnected: isPbConnected } = usePocketBase();
   const { telemetry, selectedInverter, handleInverterChange } = useTelemetry();
 
   const [headerSlot, setHeaderSlot] = useState(null);

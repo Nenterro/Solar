@@ -1,15 +1,55 @@
 import os
+import shutil
 import sqlite3
 import json
 import logging
+import uuid
 from datetime import datetime, timezone, timedelta
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 
 logger = logging.getLogger("SOLAR_DB")
 DB_PATH = os.path.join(os.path.dirname(__file__), "solar.db")
 
 # Pakistan Standard Time (PKT = UTC+5)
 PKT = timezone(timedelta(hours=5))
+
+# Fallback sampling period, in seconds, used only when a day has a single
+# sample and no gap can be measured.
+NOMINAL_SAMPLE_SECONDS = 60.0
+
+# Longest gap between two consecutive samples that is still treated as
+# continuous operation. Anything larger is backend downtime, and the missing
+# energy is not extrapolated across the hole. This has to sit above the
+# 10-minute cadence of DESS-backfilled days, or those days read low.
+MAX_GAP_SECONDS = 900.0
+
+# Physical daily ceilings (kWh). These exist ONLY to reject corrupt register
+# reads, not to second-guess good ones -- each inverter is rated 15 kW, so a
+# real day can never approach these. They must stay well above the true maximum
+# daily yield or legitimate hardware totals get discarded (this was the cause of
+# the inflated totals reported on 2026-08-22).
+MAX_DAILY_KWH_PER_INVERTER = 150.0
+MAX_DAILY_KWH_ALL = 450.0
+
+# Largest plausible single-day jump in a lifetime register, used to reject a
+# corrupt baseline or a counter reset.
+MAX_LIFETIME_DELTA_KWH = 300.0
+
+# Days of 1-minute telemetry to retain. 0 keeps everything. Daily/monthly/yearly
+# figures live in daily_totals and are never purged by this.
+TELEMETRY_RETENTION_DAYS = int(os.getenv("SOLAR_TELEMETRY_RETENTION_DAYS", "0") or 0)
+
+# This process's identity, used for the single-writer lock below.
+WRITER_ID = f"{os.getpid()}-{uuid.uuid4().hex[:8]}"
+
+# A writer that has not refreshed its heartbeat within this many seconds is
+# considered dead and its lock can be taken over.
+WRITER_LOCK_STALE_SECONDS = 180.0
+
+
+def minute_key(dt: datetime) -> str:
+    """Canonical telemetry timestamp: one slot per wall-clock minute."""
+    return dt.strftime("%Y-%m-%d %H:%M:00")
 
 def get_db_connection():
     conn = sqlite3.connect(DB_PATH, timeout=15.0)
@@ -105,15 +145,23 @@ def init_db():
         """)
 
         cursor.execute("""
-            CREATE INDEX IF NOT EXISTS idx_telemetry_time_inv 
+            CREATE TABLE IF NOT EXISTS writer_lock (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                owner TEXT NOT NULL,
+                heartbeat REAL NOT NULL
+            )
+        """)
+
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_telemetry_time_inv
             ON telemetry_history (timestamp, inverter_id)
         """)
         cursor.execute("""
-            CREATE INDEX IF NOT EXISTS idx_daily_totals_date_inv 
+            CREATE INDEX IF NOT EXISTS idx_daily_totals_date_inv
             ON daily_totals (date, inverter_id)
         """)
         cursor.execute("""
-            CREATE INDEX IF NOT EXISTS idx_cum_time_inv 
+            CREATE INDEX IF NOT EXISTS idx_cum_time_inv
             ON cumulative_snapshots (date, inverter_id, timestamp)
         """)
 
@@ -122,6 +170,159 @@ def init_db():
         logger.info(f"Database initialized successfully at {DB_PATH}")
     except Exception as e:
         logger.error(f"Error initializing DB: {e}")
+
+    _migrate_dedupe_telemetry()
+
+
+def _migrate_dedupe_telemetry():
+    """
+    One-time migration: collapse telemetry_history to a single row per
+    (minute, inverter) and add a UNIQUE index so it can never double up again.
+
+    Duplicate rows within one minute come from a second backend process polling
+    the same hardware; every energy figure is integrated per row, so duplicates
+    inflated every daily total by however many writers were running. Read-side
+    de-duplication protects the numbers, but the constraint is what makes the
+    problem structurally impossible.
+
+    Safe to run repeatedly: it is a no-op once the unique index exists.
+    """
+    try:
+        conn = get_db_connection()
+        try:
+            already = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_telemetry_unique_min_inv'"
+            ).fetchone()
+            if already:
+                return
+
+            dup_rows = conn.execute("""
+                SELECT COUNT(*) - COUNT(DISTINCT substr(timestamp, 1, 16) || '|' || inverter_id)
+                FROM telemetry_history
+            """).fetchone()[0] or 0
+            total_rows = conn.execute("SELECT COUNT(*) FROM telemetry_history").fetchone()[0] or 0
+        finally:
+            conn.close()
+
+        if dup_rows > 0:
+            backup = f"{DB_PATH}.bak-{datetime.now(PKT).strftime('%Y%m%d-%H%M%S')}"
+            try:
+                shutil.copy2(DB_PATH, backup)
+                logger.warning(f"Backed up database to {backup} before de-duplicating telemetry")
+            except Exception as e:
+                logger.error(f"Could not back up DB before migration, aborting migration: {e}")
+                return
+
+        conn = get_db_connection()
+        try:
+            # Normalise every timestamp to its minute slot, keeping the lowest
+            # rowid for each (minute, inverter) pair.
+            conn.execute("""
+                DELETE FROM telemetry_history
+                WHERE id NOT IN (
+                    SELECT MIN(id) FROM telemetry_history
+                    GROUP BY substr(timestamp, 1, 16), inverter_id
+                )
+            """)
+            conn.execute("""
+                UPDATE telemetry_history
+                SET timestamp = substr(timestamp, 1, 16) || ':00'
+                WHERE substr(timestamp, 18, 2) != '00'
+            """)
+            conn.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_telemetry_unique_min_inv
+                ON telemetry_history (timestamp, inverter_id)
+            """)
+            conn.commit()
+            logger.warning(
+                f"Telemetry de-duplication complete: removed {dup_rows} duplicate rows "
+                f"of {total_rows}; UNIQUE(timestamp, inverter_id) now enforced."
+            )
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.error(f"Error de-duplicating telemetry history: {e}")
+
+
+def purge_old_telemetry() -> int:
+    """
+    Drop 1-minute telemetry older than the configured retention window.
+
+    Disabled by default: telemetry_history grows by roughly 5,800 rows a day,
+    which SQLite handles comfortably, and the daily totals the dashboard reports
+    are kept separately in daily_totals. Set SOLAR_TELEMETRY_RETENTION_DAYS to
+    enable it.
+    """
+    if TELEMETRY_RETENTION_DAYS <= 0:
+        return 0
+    try:
+        cutoff = (datetime.now(PKT) - timedelta(days=TELEMETRY_RETENTION_DAYS)).strftime("%Y-%m-%d")
+        conn = get_db_connection()
+        try:
+            cur = conn.execute("DELETE FROM telemetry_history WHERE substr(timestamp, 1, 10) < ?", (cutoff,))
+            conn.commit()
+            if cur.rowcount:
+                logger.info(f"Purged {cur.rowcount} telemetry rows older than {cutoff}")
+            return cur.rowcount or 0
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.error(f"Error purging old telemetry: {e}")
+        return 0
+
+
+def claim_writer_lock() -> bool:
+    """
+    Try to become the single telemetry writer for this database.
+
+    Returns True if this process holds the lock. A second backend instance
+    pointed at the same solar.db will return False and must not poll hardware
+    or log telemetry -- it can still serve read-only API traffic. This is what
+    stops two pollers from both writing (and both fighting over the serial
+    ports).
+    """
+    try:
+        now_ts = datetime.now(timezone.utc).timestamp()
+        conn = get_db_connection()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT owner, heartbeat FROM writer_lock WHERE id = 1").fetchone()
+
+            if row and row["owner"] != WRITER_ID:
+                age = now_ts - float(row["heartbeat"] or 0.0)
+                if age < WRITER_LOCK_STALE_SECONDS:
+                    conn.rollback()
+                    return False
+                logger.warning(
+                    f"Taking over stale telemetry writer lock from {row['owner']} (idle {age:.0f}s)"
+                )
+
+            conn.execute("""
+                INSERT INTO writer_lock (id, owner, heartbeat) VALUES (1, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET owner=excluded.owner, heartbeat=excluded.heartbeat
+            """, (WRITER_ID, now_ts))
+            conn.commit()
+            return True
+        finally:
+            conn.close()
+    except Exception as e:
+        # If the lock cannot be evaluated, fail open so a single healthy
+        # instance never stops recording because of a transient DB error.
+        logger.error(f"Error claiming writer lock (continuing as writer): {e}")
+        return True
+
+
+def release_writer_lock():
+    """Give up the writer lock so another instance can take over immediately."""
+    try:
+        conn = get_db_connection()
+        try:
+            conn.execute("DELETE FROM writer_lock WHERE id = 1 AND owner = ?", (WRITER_ID,))
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.error(f"Error releasing writer lock: {e}")
 
 # Call init_db once at module load time
 init_db()
@@ -137,6 +338,12 @@ def nuke_db():
             conn.execute("DROP TABLE IF EXISTS realtime;")
             conn.execute("DROP TABLE IF EXISTS cumulative_snapshots;")
             conn.execute("DROP TABLE IF EXISTS lifetime_baselines;")
+            # Legacy tables from earlier revisions; dropped so a reset does not
+            # leave stale lifetime counters behind. Automations and saved
+            # inverter settings are deliberately preserved.
+            conn.execute("DROP TABLE IF EXISTS lifetime_totals;")
+            conn.execute("DROP TABLE IF EXISTS lifetime_totals_midnight;")
+            conn.execute("DROP TABLE IF EXISTS writer_lock;")
             conn.commit()
         finally:
             conn.close()
@@ -146,107 +353,6 @@ def nuke_db():
     except Exception as e:
         logger.error(f"Error nuking database: {e}")
         return False
-
-
-def clean_deviated_telemetry_points() -> int:
-    """
-    Purge and sanitize all historical deviated points in telemetry_history:
-    1. Zero out phantom grid power when grid_v < 90V or residual grid power < 80W.
-    2. Delete absurd outlier rows (>100kW, SOC > 100%, battery_v > 70V).
-    3. Standardize inv1, inv2, inv3 SOC and battery voltage to match the Knox BMS RS485 'all' row for every timestamp.
-    4. Smooth out transient single-minute SOC dips/spikes (> 5% jump in 1 minute).
-    """
-    try:
-        conn = get_db_connection()
-        try:
-            modified_count = 0
-
-            # 1. Zero out phantom grid power during load shedding / off-grid
-            cur1 = conn.execute("UPDATE telemetry_history SET grid_w = 0.0 WHERE grid_v < 90.0 OR ABS(grid_w) < 80.0")
-            modified_count += cur1.rowcount
-
-            # 2. Delete corrupt outlier rows
-            cur2 = conn.execute("""
-                DELETE FROM telemetry_history 
-                WHERE ABS(solar_w) > 100000 OR ABS(load_w) > 100000 OR ABS(grid_w) > 100000 
-                   OR ABS(battery_w) > 100000 OR battery_pct > 100.0 OR battery_pct < 0.0 OR battery_v > 70.0
-            """)
-            modified_count += cur2.rowcount
-
-            # 3. Synchronize inv1, inv2, inv3 SOC and battery_v to Knox BMS RS485 'all' rows
-            conn.execute("""
-                UPDATE telemetry_history 
-                SET battery_pct = (
-                    SELECT b.battery_pct 
-                    FROM telemetry_history b 
-                    WHERE b.timestamp = telemetry_history.timestamp AND b.inverter_id = 'all' AND b.battery_pct > 0
-                    LIMIT 1
-                ),
-                battery_v = (
-                    SELECT b.battery_v 
-                    FROM telemetry_history b 
-                    WHERE b.timestamp = telemetry_history.timestamp AND b.inverter_id = 'all' AND b.battery_v > 0
-                    LIMIT 1
-                )
-                WHERE inverter_id IN ('inv1', 'inv2', 'inv3')
-                  AND EXISTS (
-                    SELECT 1 FROM telemetry_history b 
-                    WHERE b.timestamp = telemetry_history.timestamp AND b.inverter_id = 'all' AND b.battery_pct > 0
-                  )
-            """)
-
-            # 4. Smooth out single-minute SOC dips/spikes in 'all' rows
-            rows = conn.execute("""
-                SELECT id, battery_pct 
-                FROM telemetry_history 
-                WHERE inverter_id = 'all' 
-                ORDER BY timestamp ASC
-            """).fetchall()
-
-            last_valid_soc = None
-            to_update = []
-            for r in rows:
-                soc = r["battery_pct"]
-                if last_valid_soc is not None and abs(soc - last_valid_soc) > 5.0:
-                    to_update.append((last_valid_soc, r["id"]))
-                else:
-                    if soc > 0:
-                        last_valid_soc = soc
-
-            for smooth_soc, row_id in to_update:
-                conn.execute("UPDATE telemetry_history SET battery_pct = ? WHERE id = ?", (smooth_soc, row_id))
-
-            conn.commit()
-            logger.info(f"Cleaned {modified_count + len(to_update)} deviated telemetry history points from SQLite DB.")
-            return modified_count + len(to_update)
-        finally:
-            conn.close()
-    except Exception as e:
-        logger.error(f"Error cleaning deviated telemetry points: {e}")
-        return 0
-
-
-def reset_db_history():
-    """Purge all old telemetry history and daily totals from database."""
-    return nuke_db()
-
-
-def update_realtime(inverter_id: str, payload: Dict[str, Any]):
-    """Save or replace the latest realtime telemetry payload."""
-    try:
-        conn = get_db_connection()
-        try:
-            conn.execute(
-                "INSERT OR REPLACE INTO realtime (id, payload, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)",
-                (f"latest_{inverter_id}", json.dumps(payload))
-            )
-            conn.commit()
-        finally:
-            conn.close()
-    except Exception as e:
-        logger.error(f"Error updating realtime: {e}")
-
-
 def log_telemetry_snapshot(readings: Dict[str, Dict[str, Any]], bms_power_w: Optional[float] = None):
     """
     Log a 1-minute telemetry snapshot into sqlite telemetry_history table in local Pakistan Time (PKT).
@@ -256,7 +362,9 @@ def log_telemetry_snapshot(readings: Dict[str, Dict[str, Any]], bms_power_w: Opt
         conn = get_db_connection()
         try:
             now_pkt = datetime.now(PKT)
-            time_str = now_pkt.strftime("%Y-%m-%d %H:%M:%S")
+            # One canonical slot per minute. Combined with the UNIQUE index this
+            # makes a duplicate sample overwrite rather than double-count.
+            time_str = minute_key(now_pkt)
 
             # Fetch REAL Battery SOC and Voltage from Knox BMS RS485
             bms_soc = None
@@ -287,28 +395,28 @@ def log_telemetry_snapshot(readings: Dict[str, Dict[str, Any]], bms_power_w: Opt
                 # Skip simulated/disconnected inverters — don't write zeros to DB
                 if r.get("is_simulated", False) or not r.get("connected", True):
                     continue
-                    
+
                 solar_kw = r.get("solar_power_kw", 0.0)
                 grid_kw = r.get("grid_power_kw", 0.0)
                 bat_kw = r.get("battery_power_kw", 0.0)
                 load_kw = r.get("ac_output_power_kw", 0.0)
-                
+
                 # STRICT DIRECTIVE: Use Knox BMS RS485 SOC & Voltage ONLY (never inverter wires!)
                 soc_val = bms_soc if bms_soc is not None else 0.0
                 bat_v = bms_v if bms_v is not None else 0.0
-                
+
                 # Modbus / Serial glitch filter (>100kW or SOC > 100% or battery_v > 70V is corrupted)
                 if abs(solar_kw) > 100.0 or abs(grid_kw) > 100.0 or abs(bat_kw) > 100.0 or abs(load_kw) > 100.0 or soc_val > 100.0 or soc_val < 0.0 or bat_v > 70.0:
                     logger.warning(f"Outlier detected for {inv_id}: bat={bat_kw}, grid={grid_kw}, soc={soc_val}%, v={bat_v}V. Skipping.")
                     continue
-                
+
                 valid_readings[inv_id] = r
                 clamped_soc = min(100.0, max(0.0, float(soc_val)))
 
                 # Rate-of-change DB glitch suppression (SOC cannot jump > 5% in 1 minute)
                 if not hasattr(log_telemetry_snapshot, 'last_db_soc'):
                     log_telemetry_snapshot.last_db_soc = {}
-                
+
                 prev_db_soc = log_telemetry_snapshot.last_db_soc.get(inv_id)
                 if prev_db_soc is not None and abs(clamped_soc - prev_db_soc) > 5.0:
                     logger.warning(f"Telemetry DB log SOC glitch suppressed for {inv_id}: {clamped_soc}% vs last recorded {prev_db_soc}%. Using {prev_db_soc}%.")
@@ -317,9 +425,18 @@ def log_telemetry_snapshot(readings: Dict[str, Dict[str, Any]], bms_power_w: Opt
                     log_telemetry_snapshot.last_db_soc[inv_id] = clamped_soc
 
                 conn.execute("""
-                    INSERT INTO telemetry_history 
+                    INSERT INTO telemetry_history
                     (timestamp, inverter_id, solar_w, load_w, grid_w, battery_w, battery_pct, battery_v, grid_v, temp_c)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(timestamp, inverter_id) DO UPDATE SET
+                        solar_w=excluded.solar_w,
+                        load_w=excluded.load_w,
+                        grid_w=excluded.grid_w,
+                        battery_w=excluded.battery_w,
+                        battery_pct=excluded.battery_pct,
+                        battery_v=excluded.battery_v,
+                        grid_v=excluded.grid_v,
+                        temp_c=excluded.temp_c
                 """, (
                     time_str,
                     inv_id,
@@ -335,7 +452,7 @@ def log_telemetry_snapshot(readings: Dict[str, Dict[str, Any]], bms_power_w: Opt
 
             # 2. Insert combined system total row ('all') with real averages
             readings_to_sum = valid_readings.values()
-            
+
             if not readings_to_sum:
                 conn.commit()
                 return
@@ -344,30 +461,48 @@ def log_telemetry_snapshot(readings: Dict[str, Dict[str, Any]], bms_power_w: Opt
             total_load = sum(r.get("ac_output_power_kw", 0.0) * 1000.0 for r in readings_to_sum)
             total_grid = sum(r.get("grid_power_kw", 0.0) * 1000.0 for r in readings_to_sum)
             total_bat = sum(r.get("battery_power_kw", 0.0) * 1000.0 for r in readings_to_sum)
-            
+
             socs = [r.get("battery_capacity_pct", 0.0) for r in readings_to_sum]
             avg_soc = sum(socs) / len(socs) if socs else 0.0
-            
+
             bat_vs = [r.get("battery_voltage", 0.0) for r in readings_to_sum]
             avg_bat_v = sum(bat_vs) / len(bat_vs) if bat_vs else 0.0
-            
+
             grid_vs = [r.get("grid_voltage", 0.0) for r in readings_to_sum]
             max_grid_v = max(grid_vs) if grid_vs else 0.0
-            
+
             temps = [r.get("inverter_temp_c", 0.0) for r in readings_to_sum]
             avg_temp = sum(temps) / len(temps) if temps else 0.0
 
             conn.execute("""
-                INSERT INTO telemetry_history 
+                INSERT INTO telemetry_history
                 (timestamp, inverter_id, solar_w, load_w, grid_w, battery_w, battery_pct, battery_v, grid_v, temp_c)
                 VALUES (?, 'all', ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(timestamp, inverter_id) DO UPDATE SET
+                    solar_w=excluded.solar_w,
+                    load_w=excluded.load_w,
+                    grid_w=excluded.grid_w,
+                    battery_w=excluded.battery_w,
+                    battery_pct=excluded.battery_pct,
+                    battery_v=excluded.battery_v,
+                    grid_v=excluded.grid_v,
+                    temp_c=excluded.temp_c
             """, (time_str, total_solar, total_load, total_grid, total_bat, avg_soc, avg_bat_v, max_grid_v, avg_temp))
 
             if bms_power_w is not None:
                 conn.execute("""
-                    INSERT INTO telemetry_history 
+                    INSERT INTO telemetry_history
                     (timestamp, inverter_id, solar_w, load_w, grid_w, battery_w, battery_pct, battery_v, grid_v, temp_c)
                     VALUES (?, 'bms', 0, 0, 0, ?, ?, ?, 0, ?)
+                    ON CONFLICT(timestamp, inverter_id) DO UPDATE SET
+                        solar_w=excluded.solar_w,
+                        load_w=excluded.load_w,
+                        grid_w=excluded.grid_w,
+                        battery_w=excluded.battery_w,
+                        battery_pct=excluded.battery_pct,
+                        battery_v=excluded.battery_v,
+                        grid_v=excluded.grid_v,
+                        temp_c=excluded.temp_c
                 """, (time_str, float(bms_power_w), avg_soc, avg_bat_v, avg_temp))
 
             conn.commit()
@@ -377,38 +512,117 @@ def log_telemetry_snapshot(readings: Dict[str, Dict[str, Any]], bms_power_w: Opt
         logger.error(f"Error logging telemetry snapshot: {e}")
 
 
+def _fetch_samples(conn, date_str: str, inverter_id: str,
+                   columns: str = "solar_w, load_w, grid_w, battery_w") -> List[sqlite3.Row]:
+    """
+    Fetch one telemetry sample per wall-clock minute for a day, oldest first.
+
+    Historical rows written before the UNIQUE(timestamp, inverter_id) migration
+    can still contain several samples for the same minute (one per backend
+    process that was running). GROUP BY the minute so every minute contributes
+    exactly once, whatever is in the table.
+    """
+    return conn.execute(f"""
+        SELECT substr(timestamp, 1, 16) AS minute, {columns}
+        FROM telemetry_history
+        WHERE timestamp LIKE ? AND inverter_id = ?
+        GROUP BY substr(timestamp, 1, 16)
+        ORDER BY minute ASC
+    """, (f"{date_str}%", inverter_id)).fetchall()
+
+
+def _sample_durations(rows: List[sqlite3.Row]) -> List[float]:
+    """
+    Return the number of seconds each sample represents.
+
+    Energy must be integrated against the real spacing between samples, never
+    against an assumed one-minute cadence: a backfilled day is spaced 10 minutes
+    apart and a restart can leave a gap, so a fixed divisor silently scales the
+    whole day's kWh up or down. Each sample covers the interval up to the next
+    one, clamped to MAX_GAP_SECONDS so downtime is not extrapolated over.
+    """
+    n = len(rows)
+    if n == 0:
+        return []
+
+    stamps: List[Optional[datetime]] = []
+    for r in rows:
+        try:
+            stamps.append(datetime.strptime(r["minute"], "%Y-%m-%d %H:%M"))
+        except (ValueError, TypeError):
+            stamps.append(None)
+
+    durations: List[Optional[float]] = []
+    for i in range(n):
+        gap = None
+        if stamps[i] is not None:
+            for j in range(i + 1, n):
+                if stamps[j] is not None:
+                    gap = (stamps[j] - stamps[i]).total_seconds()
+                    break
+        durations.append(min(gap, MAX_GAP_SECONDS) if (gap and gap > 0) else None)
+
+    # The final sample has no successor. Give it the day's typical cadence so a
+    # 1-minute day and a 10-minute backfilled day are both handled correctly.
+    known = sorted(d for d in durations if d is not None)
+    # Lower median: exact for a uniform cadence, and biased to under-count
+    # rather than over-count when the spacing is ragged.
+    typical = known[(len(known) - 1) // 2] if known else NOMINAL_SAMPLE_SECONDS
+    return [d if d is not None else typical for d in durations]
+
+
+def integrate_samples(rows: List[sqlite3.Row]) -> Dict[str, float]:
+    """Integrate power samples (W) into energy (kWh) using real sample spacing."""
+    totals = {"solar": 0.0, "load": 0.0, "gridImport": 0.0,
+              "gridExport": 0.0, "batteryCharge": 0.0, "batteryDischarge": 0.0}
+
+    for r, secs in zip(rows, _sample_durations(rows)):
+        hours = secs / 3600.0
+        s_kw = max(0.0, (r["solar_w"] or 0.0) / 1000.0)
+        l_kw = max(0.0, (r["load_w"] or 0.0) / 1000.0)
+        g_kw = (r["grid_w"] or 0.0) / 1000.0
+        b_kw = (r["battery_w"] or 0.0) / 1000.0
+
+        totals["solar"] += s_kw * hours
+        totals["load"] += l_kw * hours
+        if g_kw > 0:
+            totals["gridImport"] += g_kw * hours
+        else:
+            totals["gridExport"] += abs(g_kw) * hours
+        if b_kw > 0:
+            totals["batteryCharge"] += b_kw * hours
+        else:
+            totals["batteryDischarge"] += abs(b_kw) * hours
+
+    return totals
+
+
 def query_bms_daily_totals(date_str: str) -> Dict[str, float]:
     """
-    Calculate total kWh charged and total kWh discharged for a given date 
+    Calculate total kWh charged and total kWh discharged for a given date
     directly from 1-minute BMS RS485 power readings in SQLite.
     """
     try:
         conn = get_db_connection()
         try:
-            rows = conn.execute("""
-                SELECT battery_w FROM telemetry_history
-                WHERE timestamp LIKE ? AND inverter_id = 'bms'
-            """, (f"{date_str}%",)).fetchall()
-            
+            rows = _fetch_samples(conn, date_str, "bms", columns="battery_w")
             if not rows:
-                rows = conn.execute("""
-                    SELECT battery_w FROM telemetry_history
-                    WHERE timestamp LIKE ? AND inverter_id = 'all'
-                """, (f"{date_str}%",)).fetchall()
-            
-            charge_wh = 0.0
-            discharge_wh = 0.0
-            for r in rows:
-                w = float(r["battery_w"] or 0.0)
-                if w > 0:
-                    charge_wh += w / 60.0
-                elif w < 0:
-                    discharge_wh += abs(w) / 60.0
-                    
+                rows = _fetch_samples(conn, date_str, "all", columns="battery_w")
+
+            charge_kwh = 0.0
+            discharge_kwh = 0.0
+            for r, secs in zip(rows, _sample_durations(rows)):
+                kw = float(r["battery_w"] or 0.0) / 1000.0
+                hours = secs / 3600.0
+                if kw > 0:
+                    charge_kwh += kw * hours
+                elif kw < 0:
+                    discharge_kwh += abs(kw) * hours
+
             return {
                 "date": date_str,
-                "bms_charge_kwh": round(charge_wh / 1000.0, 2),
-                "bms_discharge_kwh": round(discharge_wh / 1000.0, 2)
+                "bms_charge_kwh": round(charge_kwh, 2),
+                "bms_discharge_kwh": round(discharge_kwh, 2)
             }
         finally:
             conn.close()
@@ -447,49 +661,104 @@ def update_lifetime_totals_and_calculate_daily(lifetime_readings: Dict[str, Dict
 
             daily_totals_calculated = {}
 
-            for inv_id, r in lifetime_readings.items():
-                curr_solar = float(r.get("solar") or 0.0)
-                curr_load = float(r.get("load") or 0.0)
-                curr_gi = float(r.get("grid_import") or 0.0)
-                curr_ge = float(r.get("grid_export") or 0.0)
-                curr_bc = float(r.get("battery_charge") or 0.0)
-                curr_bd = float(r.get("battery_discharge") or 0.0)
+            fields = [
+                ("solar", "solar_start"),
+                ("load", "load_start"),
+                ("grid_import", "grid_import_start"),
+                ("grid_export", "grid_export_start"),
+                ("battery_charge", "battery_charge_start"),
+                ("battery_discharge", "battery_discharge_start"),
+            ]
+            prev_cols = {
+                "solar": "solar_kwh", "load": "load_kwh", "grid_import": "grid_import_kwh",
+                "grid_export": "grid_export_kwh", "battery_charge": "battery_charge_kwh",
+                "battery_discharge": "battery_discharge_kwh",
+            }
 
-                if curr_solar == 0.0 and curr_load == 0.0 and curr_gi == 0.0:
+            for inv_id, r in lifetime_readings.items():
+                # A register that failed to read comes back as None or 0.0. It must
+                # never be treated as a real value: stored as a start-of-day
+                # baseline it makes the day's total equal the whole lifetime
+                # counter, and used as a current value it wipes a good total to 0.
+                current = {}
+                for key, _col in fields:
+                    v = r.get(key)
+                    try:
+                        v = float(v) if v is not None else None
+                    except (TypeError, ValueError):
+                        v = None
+                    current[key] = v if (v is not None and v > 0.0) else None
+
+                if all(v is None for v in current.values()):
                     continue
 
-                # Fetch or initialize start-of-day baseline
                 base_row = conn.execute(
                     "SELECT * FROM lifetime_baselines WHERE date = ? AND inverter_id = ?",
                     (today_str, inv_id)
                 ).fetchone()
 
-                if not base_row:
-                    conn.execute("""
-                        INSERT OR REPLACE INTO lifetime_baselines
-                        (date, inverter_id, solar_start, load_start, grid_import_start, grid_export_start, battery_charge_start, battery_discharge_start)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (today_str, inv_id, curr_solar, curr_load, curr_gi, curr_ge, curr_bc, curr_bd))
-                    conn.commit()
-                    
-                    solar_start, load_start, gi_start, ge_start, bc_start, bd_start = (
-                        curr_solar, curr_load, curr_gi, curr_ge, curr_bc, curr_bd
-                    )
-                else:
-                    solar_start = base_row["solar_start"]
-                    load_start = base_row["load_start"]
-                    gi_start = base_row["grid_import_start"]
-                    ge_start = base_row["grid_export_start"]
-                    bc_start = base_row["battery_charge_start"]
-                    bd_start = base_row["battery_discharge_start"]
+                baseline = {}
+                for key, col in fields:
+                    prev = base_row[col] if base_row is not None else None
+                    try:
+                        prev = float(prev) if prev is not None else None
+                    except (TypeError, ValueError):
+                        prev = None
+                    # Only ever establish a baseline from a real reading, so a
+                    # register that was unreadable at midnight gets its baseline
+                    # from the first cycle that does read it.
+                    baseline[key] = prev if (prev is not None and prev > 0.0) else current[key]
 
-                # Daily delta = max(0, curr - baseline)
-                daily_s = max(0.0, round(curr_solar - solar_start, 1)) if (curr_solar - solar_start) <= 300.0 else 0.0
-                daily_l = max(0.0, round(curr_load - load_start, 1)) if (curr_load - load_start) <= 300.0 else 0.0
-                daily_gi = max(0.0, round(curr_gi - gi_start, 1)) if (curr_gi - gi_start) <= 300.0 else 0.0
-                daily_ge = max(0.0, round(curr_ge - ge_start, 1)) if (curr_ge - ge_start) <= 300.0 else 0.0
-                daily_bc = max(0.0, round(curr_bc - bc_start, 1)) if (curr_bc - bc_start) <= 300.0 else 0.0
-                daily_bd = max(0.0, round(curr_bd - bd_start, 1)) if (curr_bd - bd_start) <= 300.0 else 0.0
+                conn.execute("""
+                    INSERT INTO lifetime_baselines
+                    (date, inverter_id, solar_start, load_start, grid_import_start, grid_export_start, battery_charge_start, battery_discharge_start)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(date, inverter_id) DO UPDATE SET
+                        solar_start=COALESCE(lifetime_baselines.solar_start, excluded.solar_start),
+                        load_start=COALESCE(lifetime_baselines.load_start, excluded.load_start),
+                        grid_import_start=COALESCE(lifetime_baselines.grid_import_start, excluded.grid_import_start),
+                        grid_export_start=COALESCE(lifetime_baselines.grid_export_start, excluded.grid_export_start),
+                        battery_charge_start=COALESCE(lifetime_baselines.battery_charge_start, excluded.battery_charge_start),
+                        battery_discharge_start=COALESCE(lifetime_baselines.battery_discharge_start, excluded.battery_discharge_start)
+                """, (today_str, inv_id, baseline["solar"], baseline["load"], baseline["grid_import"],
+                      baseline["grid_export"], baseline["battery_charge"], baseline["battery_discharge"]))
+                conn.commit()
+
+                prev_row = conn.execute("""
+                    SELECT solar_kwh, load_kwh, grid_import_kwh, grid_export_kwh,
+                           battery_charge_kwh, battery_discharge_kwh
+                    FROM daily_totals WHERE date = ? AND inverter_id = ?
+                """, (today_str, inv_id)).fetchone()
+
+                daily = {}
+                for key, _col in fields:
+                    keep = float(prev_row[prev_cols[key]] or 0.0) if prev_row is not None else 0.0
+                    curr_v, base_v = current[key], baseline[key]
+
+                    if curr_v is None or base_v is None:
+                        # Unreadable this cycle: hold the last good value.
+                        daily[key] = keep
+                        continue
+
+                    delta = curr_v - base_v
+                    if delta < 0.0 or delta > MAX_LIFETIME_DELTA_KWH:
+                        logger.warning(
+                            f"Implausible lifetime delta for {inv_id}.{key}: "
+                            f"{curr_v} - {base_v} = {delta:.1f} kWh. Holding {keep} kWh."
+                        )
+                        daily[key] = keep
+                        continue
+
+                    # Lifetime counters only increase, so today's total can never
+                    # shrink; a smaller value means a corrupt frame.
+                    daily[key] = max(keep, round(delta, 1))
+
+                daily_s = daily["solar"]
+                daily_l = daily["load"]
+                daily_gi = daily["grid_import"]
+                daily_ge = daily["grid_export"]
+                daily_bc = daily["battery_charge"]
+                daily_bd = daily["battery_discharge"]
 
                 daily_totals_calculated[inv_id] = {
                     "solar": daily_s,
@@ -501,7 +770,7 @@ def update_lifetime_totals_and_calculate_daily(lifetime_readings: Dict[str, Dict
                 }
 
                 conn.execute("""
-                    INSERT INTO daily_totals 
+                    INSERT INTO daily_totals
                     (date, inverter_id, solar_kwh, load_kwh, grid_import_kwh, grid_export_kwh, battery_charge_kwh, battery_discharge_kwh, updated_at)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                     ON CONFLICT(date, inverter_id) DO UPDATE SET
@@ -524,7 +793,7 @@ def update_lifetime_totals_and_calculate_daily(lifetime_readings: Dict[str, Dict
                 tot_bd = round(sum(d["batteryDischarge"] for d in daily_totals_calculated.values()), 1)
 
                 conn.execute("""
-                    INSERT INTO daily_totals 
+                    INSERT INTO daily_totals
                     (date, inverter_id, solar_kwh, load_kwh, grid_import_kwh, grid_export_kwh, battery_charge_kwh, battery_discharge_kwh, updated_at)
                     VALUES (?, 'all', ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                     ON CONFLICT(date, inverter_id) DO UPDATE SET
@@ -567,7 +836,7 @@ def save_daily_totals(records: List[Dict[str, Any]], inverter_id: str = "all"):
                     continue
 
                 conn.execute("""
-                    INSERT INTO daily_totals 
+                    INSERT INTO daily_totals
                     (date, inverter_id, solar_kwh, load_kwh, grid_import_kwh, grid_export_kwh, battery_charge_kwh, battery_discharge_kwh, updated_at)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                     ON CONFLICT(date, inverter_id) DO UPDATE SET
@@ -599,111 +868,79 @@ def save_daily_totals(records: List[Dict[str, Any]], inverter_id: str = "all"):
 
 def get_combined_daily_total(date_str: str, inverter_id: str = "all") -> Dict[str, Any]:
     """
-    Returns the daily total for a given date by combining:
-    1. Hardware lifetime register delta (from daily_totals table)
-    2. 1-minute power integration (from telemetry_history table)
-    Filters out any corrupt/inflated baseline jumps > 100.0 kWh (or > 35.0 kWh per single inverter)
-    and prefers the 1-minute power integration total if hardware value is suspiciously inflated.
+    Return the daily energy totals for one date and one inverter selection.
+
+    Two independent sources exist for every figure:
+
+      1. The inverter's own lifetime energy registers (QET/QLT/QGT/QFT/QCT/QDT),
+         differenced against a start-of-day baseline and stored in daily_totals.
+         This is the authoritative source -- it is the same counter the inverter
+         display and DESSMonitor report, and it cannot drift.
+      2. Integration of the 1-minute power samples in telemetry_history. This is
+         a fallback: it misses any period the backend was down and inherits every
+         sensor error, so it is only used when the hardware value is unavailable.
+
+    Earlier revisions discarded any hardware value above a 35 kWh/inverter cap
+    and fell back to the integration -- but inv1 and inv2 genuinely produce
+    39-49 kWh on a clear day, so the correct number was thrown away every good
+    day. The caps here exist only to reject corrupt register frames and sit far
+    above any physically achievable daily total.
     """
+    metrics = ("solar", "load", "gridImport", "gridExport", "batteryCharge", "batteryDischarge")
     try:
         conn = get_db_connection()
         try:
-            # Maximum physical ceiling per day (kWh)
-            max_daily_cap = 100.0 if inverter_id == "all" else 35.0
+            max_daily = MAX_DAILY_KWH_ALL if inverter_id == "all" else MAX_DAILY_KWH_PER_INVERTER
 
-            # 1. Fetch hardware daily total from daily_totals table
             row = conn.execute("""
                 SELECT solar_kwh, load_kwh, grid_import_kwh, grid_export_kwh, battery_charge_kwh, battery_discharge_kwh
                 FROM daily_totals
                 WHERE date = ? AND inverter_id = ?
             """, (date_str, inverter_id)).fetchone()
 
-            hw_s = round(row["solar_kwh"], 2) if row else 0.0
-            hw_l = round(row["load_kwh"], 2) if row else 0.0
-            hw_gi = round(row["grid_import_kwh"], 2) if row else 0.0
-            hw_ge = round(row["grid_export_kwh"], 2) if row else 0.0
-            hw_bc = round(row["battery_charge_kwh"], 2) if row else 0.0
-            hw_bd = round(row["battery_discharge_kwh"], 2) if row else 0.0
+            hw = {
+                "solar": row["solar_kwh"] if row else 0.0,
+                "load": row["load_kwh"] if row else 0.0,
+                "gridImport": row["grid_import_kwh"] if row else 0.0,
+                "gridExport": row["grid_export_kwh"] if row else 0.0,
+                "batteryCharge": row["battery_charge_kwh"] if row else 0.0,
+                "batteryDischarge": row["battery_discharge_kwh"] if row else 0.0,
+            }
+            hw_corrupt = False
+            for k in metrics:
+                v = float(hw[k] or 0.0)
+                if v < 0.0 or v > max_daily:
+                    logger.warning(
+                        f"Rejecting corrupt hardware total {inverter_id}.{k} for {date_str}: {v} kWh"
+                    )
+                    v = 0.0
+                    hw_corrupt = True
+                hw[k] = v
 
-            # Discard inflated hardware register jumps above max physical ceiling
-            if hw_s > max_daily_cap: hw_s = 0.0
-            if hw_l > max_daily_cap: hw_l = 0.0
-            if hw_gi > max_daily_cap: hw_gi = 0.0
-            if hw_ge > max_daily_cap: hw_ge = 0.0
-            if hw_bc > max_daily_cap: hw_bc = 0.0
-            if hw_bd > max_daily_cap: hw_bd = 0.0
-
-            # 2. Integrate 1-minute telemetry_history power samples
-            t_rows = conn.execute("""
-                SELECT solar_w, load_w, grid_w, battery_w
-                FROM telemetry_history
-                WHERE timestamp LIKE ? AND inverter_id = ?
-            """, (f"{date_str}%", inverter_id)).fetchall()
-
-            int_s, int_l, int_gi, int_ge, int_bc, int_bd = 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
-            if t_rows:
-                for r in t_rows:
-                    s_kw = max(0.0, r["solar_w"] / 1000.0)
-                    l_kw = max(0.0, r["load_w"] / 1000.0)
-                    g_kw = r["grid_w"] / 1000.0
-                    b_kw = r["battery_w"] / 1000.0
-
-                    int_s += s_kw / 60.0
-                    int_l += l_kw / 60.0
-                    if g_kw > 0: int_gi += g_kw / 60.0
-                    else: int_ge += abs(g_kw) / 60.0
-
-                    if b_kw > 0: int_bc += b_kw / 60.0
-                    else: int_bd += abs(b_kw) / 60.0
-
-            # If 1-minute integrated total exists, prefer it if hardware value is zero or suspiciously inflated (> 1.5x int)
-            if int_s > 0:
-                final_s = int_s if (hw_s == 0.0 or hw_s > int_s * 1.5) else max(hw_s, int_s)
+            # Pick one source for the whole day rather than mixing per metric:
+            # a metric that is legitimately zero in hardware (no battery
+            # discharge today, say) would otherwise fall through to the
+            # integration and pick up sensor noise. Never take max() of the two
+            # either -- that biases every figure upwards.
+            # A rejected register means the whole row is suspect, so the day
+            # falls back to the integration rather than reporting a zero for the
+            # corrupt metric alongside good values for the rest.
+            if not hw_corrupt and any(hw[k] > 0.0 for k in metrics):
+                final, source = hw, "hardware"
             else:
-                final_s = hw_s
-
-            if int_l > 0:
-                final_l = int_l if (hw_l == 0.0 or hw_l > int_l * 1.5) else max(hw_l, int_l)
-            else:
-                final_l = hw_l
-
-            if int_gi > 0:
-                final_gi = int_gi if (hw_gi == 0.0 or hw_gi > int_gi * 1.5) else max(hw_gi, int_gi)
-            else:
-                final_gi = hw_gi
-
-            if int_ge > 0:
-                final_ge = int_ge if (hw_ge == 0.0 or hw_ge > int_ge * 1.5) else max(hw_ge, int_ge)
-            else:
-                final_ge = hw_ge
-
-            if int_bc > 0:
-                final_bc = int_bc if (hw_bc == 0.0 or hw_bc > int_bc * 1.5) else max(hw_bc, int_bc)
-            else:
-                final_bc = hw_bc
-
-            if int_bd > 0:
-                final_bd = int_bd if (hw_bd == 0.0 or hw_bd > int_bd * 1.5) else max(hw_bd, int_bd)
-            else:
-                final_bd = hw_bd
+                final = integrate_samples(_fetch_samples(conn, date_str, inverter_id))
+                source = "integrated"
 
             return {
                 "time": date_str,
-                "solar": round(final_s, 1),
-                "load": round(final_l, 1),
-                "gridImport": round(final_gi, 1),
-                "gridExport": round(final_ge, 1),
-                "batteryCharge": round(final_bc, 1),
-                "batteryDischarge": round(final_bd, 1)
+                "source": source,
+                **{k: round(final[k], 1) for k in metrics},
             }
         finally:
             conn.close()
     except Exception as e:
         logger.error(f"Error computing combined daily total: {e}")
-        return {
-            "time": date_str, "solar": 0.0, "load": 0.0, "gridImport": 0.0,
-            "gridExport": 0.0, "batteryCharge": 0.0, "batteryDischarge": 0.0
-        }
+        return {"time": date_str, "source": "error", **{k: 0.0 for k in metrics}}
 
 
 def query_daily_totals_for_month(year_month: str, inverter_id: str = "all") -> List[Dict[str, Any]]:
@@ -794,9 +1031,6 @@ def query_daily_totals_for_year(year_str: str, inverter_id: str = "all") -> List
         return []
 
 
-
-
-
 def query_daily_history(date_str: str, inverter_id: str = "all") -> List[Dict[str, Any]]:
     """
     Query 1-minute telemetry history for Graphs Page.
@@ -808,9 +1042,10 @@ def query_daily_history(date_str: str, inverter_id: str = "all") -> List[Dict[st
             # Build 1-minute lookup map for Knox BMS RS485 SOC for this day (from 'all' rows)
             bms_soc_map = {}
             bms_rows = conn.execute("""
-                SELECT timestamp, battery_pct
+                SELECT MIN(timestamp) AS timestamp, battery_pct
                 FROM telemetry_history
                 WHERE timestamp LIKE ? AND inverter_id = 'all'
+                GROUP BY substr(timestamp, 1, 16)
                 ORDER BY timestamp ASC
             """, (f"{date_str}%",)).fetchall()
             for br in bms_rows:
@@ -819,10 +1054,13 @@ def query_daily_history(date_str: str, inverter_id: str = "all") -> List[Dict[st
                 if br["battery_pct"] and br["battery_pct"] > 0:
                     bms_soc_map[t_key] = br["battery_pct"]
 
+            # One point per minute: pre-migration days can hold several samples
+            # per minute, which would otherwise plot as a vertical smear.
             rows = conn.execute("""
-                SELECT timestamp, solar_w, load_w, grid_w, battery_w, battery_pct, grid_v
+                SELECT MIN(timestamp) AS timestamp, solar_w, load_w, grid_w, battery_w, battery_pct, grid_v
                 FROM telemetry_history
                 WHERE timestamp LIKE ? AND inverter_id = ?
+                GROUP BY substr(timestamp, 1, 16)
                 ORDER BY timestamp ASC
             """, (f"{date_str}%", inverter_id)).fetchall()
 
@@ -867,107 +1105,68 @@ def query_daily_history(date_str: str, inverter_id: str = "all") -> List[Dict[st
     except Exception as e:
         logger.error(f"Error querying history: {e}")
         return []
-
-
-def save_cumulative_snapshot(date_str: str, timestamp_str: str, inverter_id: str, r: Dict[str, float]):
-    """
-    Log or update a 10-minute cumulative daily kWh snapshot into cumulative_snapshots table.
-    """
-    try:
-        conn = get_db_connection()
-        try:
-            conn.execute("""
-                INSERT INTO cumulative_snapshots
-                (timestamp, date, inverter_id, solar_kwh, load_kwh, grid_import_kwh, grid_export_kwh, battery_charge_kwh, battery_discharge_kwh)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                timestamp_str, date_str, inverter_id,
-                round(float(r.get("solar", 0.0)), 2),
-                round(float(r.get("load", 0.0)), 2),
-                round(float(r.get("gridImport", 0.0)), 2),
-                round(float(r.get("gridExport", 0.0)), 2),
-                round(float(r.get("batteryCharge", 0.0)), 2),
-                round(float(r.get("batteryDischarge", 0.0)), 2)
-            ))
-            conn.commit()
-        finally:
-            conn.close()
-    except Exception as e:
-        logger.error(f"Error saving cumulative snapshot: {e}")
-
 def query_cumulative_history(date_str: str, inverter_id: str = "all") -> List[Dict[str, Any]]:
     """
-    Cumulative Intraday Graph Endpoint.
-    Uses the current value of the daily total (calculated from lifetime differences)
-    to render the cumulative intraday accumulation curve.
+    Build the intraday cumulative energy curve for one day.
+
+    Energy is accumulated from the 1-minute power samples using their real
+    spacing, so the final point of the curve agrees with the day's integrated
+    total instead of scaling with however many samples happen to exist.
     """
+    metrics = ("solar", "load", "gridImport", "gridExport", "batteryCharge", "batteryDischarge")
     try:
         conn = get_db_connection()
         try:
-            # 1. Fetch current calculated daily total for the day
-            day_tot = query_daily_totals_for_day(date_str, inverter_id)
-            
-            tot_solar = day_tot.get("solar", 0.0) if day_tot else 0.0
-            tot_load = day_tot.get("load", 0.0) if day_tot else 0.0
-            tot_gi = day_tot.get("gridImport", 0.0) if day_tot else 0.0
-            tot_ge = day_tot.get("gridExport", 0.0) if day_tot else 0.0
-            tot_bc = day_tot.get("batteryCharge", 0.0) if day_tot else 0.0
-            tot_bd = day_tot.get("batteryDischarge", 0.0) if day_tot else 0.0
+            rows = _fetch_samples(
+                conn, date_str, inverter_id,
+                columns="solar_w, load_w, grid_w, battery_w, battery_pct"
+            )
 
-            # 2. Fetch 1-minute telemetry history points for the day to format the timeline
-            t_rows = conn.execute("""
-                SELECT timestamp, solar_w, load_w, grid_w, battery_w, battery_pct
-                FROM telemetry_history
-                WHERE timestamp LIKE ? AND inverter_id = ?
-                ORDER BY timestamp ASC
-            """, (f"{date_str}%", inverter_id)).fetchall()
-
-            if t_rows:
+            if rows:
                 results = [{
                     "time": "00:00",
-                    "solar": 0.0, "load": 0.0, "gridImport": 0.0,
-                    "gridExport": 0.0, "batteryCharge": 0.0, "batteryDischarge": 0.0,
-                    "batteryLevel": t_rows[0]["battery_pct"] if t_rows else 0.0
+                    **{k: 0.0 for k in metrics},
+                    "batteryLevel": rows[0]["battery_pct"] or 0.0
                 }]
-                
-                # Accumulate energy using 1-minute power integration
-                cum_s, cum_l, cum_gi, cum_ge, cum_bc, cum_bd = 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
-                total_count = len(t_rows)
-                
-                for idx, r in enumerate(t_rows):
-                    s_kw = max(0.0, r["solar_w"] / 1000.0)
-                    l_kw = max(0.0, r["load_w"] / 1000.0)
-                    g_kw = r["grid_w"] / 1000.0
-                    b_kw = r["battery_w"] / 1000.0
 
-                    cum_s += s_kw / 60.0
-                    cum_l += l_kw / 60.0
-                    if g_kw > 0: cum_gi += g_kw / 60.0
-                    else: cum_ge += abs(g_kw) / 60.0
+                cum = {k: 0.0 for k in metrics}
+                for r, secs in zip(rows, _sample_durations(rows)):
+                    hours = secs / 3600.0
+                    s_kw = max(0.0, (r["solar_w"] or 0.0) / 1000.0)
+                    l_kw = max(0.0, (r["load_w"] or 0.0) / 1000.0)
+                    g_kw = (r["grid_w"] or 0.0) / 1000.0
+                    b_kw = (r["battery_w"] or 0.0) / 1000.0
 
-                    if b_kw > 0: cum_bc += b_kw / 60.0
-                    else: cum_bd += abs(b_kw) / 60.0
+                    cum["solar"] += s_kw * hours
+                    cum["load"] += l_kw * hours
+                    if g_kw > 0:
+                        cum["gridImport"] += g_kw * hours
+                    else:
+                        cum["gridExport"] += abs(g_kw) * hours
+                    if b_kw > 0:
+                        cum["batteryCharge"] += b_kw * hours
+                    else:
+                        cum["batteryDischarge"] += abs(b_kw) * hours
 
-                    ts_str = r["timestamp"]
-                    time_label = ts_str[11:16] if len(ts_str) >= 16 else ts_str
-                    
-                    if time_label != "00:00":
+                    minute = r["minute"] or ""
+                    time_label = minute[11:16] if len(minute) >= 16 else minute
+                    if time_label and time_label != "00:00":
                         results.append({
                             "time": time_label,
-                            "solar": round(cum_s, 2),
-                            "load": round(cum_l, 2),
-                            "gridImport": round(cum_gi, 2),
-                            "gridExport": round(cum_ge, 2),
-                            "batteryCharge": round(cum_bc, 2),
-                            "batteryDischarge": round(cum_bd, 2),
-                            "batteryLevel": r["battery_pct"]
+                            **{k: round(cum[k], 2) for k in metrics},
+                            "batteryLevel": r["battery_pct"] or 0.0
                         })
                 return results
 
-            # 3. If no 1-minute history yet, generate points up to current time ending at current daily total
+            # No power samples for this day: fall back to a smooth ramp up to the
+            # day's known total so the chart is not simply blank.
+            day_tot = query_daily_totals_for_day(date_str, inverter_id) or {}
+            totals = {k: float(day_tot.get(k, 0.0) or 0.0) for k in metrics}
+            if not any(totals.values()):
+                return []
+
             now_pkt = datetime.now(PKT)
             today_str = now_pkt.strftime("%Y-%m-%d")
-            
             if date_str == today_str:
                 max_minutes = now_pkt.hour * 60 + now_pkt.minute + 1
             else:
@@ -975,88 +1174,19 @@ def query_cumulative_history(date_str: str, inverter_id: str = "all") -> List[Di
 
             results = []
             for m in range(0, max_minutes, 10):
-                h = m // 60
-                mn = m % 60
-                time_label = f"{h:02d}:{mn:02d}"
+                time_label = f"{m // 60:02d}:{m % 60:02d}"
                 frac = min(1.0, m / max(1, max_minutes - 10))
-
                 results.append({
                     "time": time_label,
-                    "solar": round(tot_solar * frac, 2),
-                    "load": round(tot_load * frac, 2),
-                    "gridImport": round(tot_gi * frac, 2),
-                    "gridExport": round(tot_ge * frac, 2),
-                    "batteryCharge": round(tot_bc * frac, 2),
-                    "batteryDischarge": round(tot_bd * frac, 2),
-                    "batteryLevel": 100
+                    **{k: round(totals[k] * frac, 2) for k in metrics},
+                    "batteryLevel": 0.0
                 })
-
             return results
         finally:
             conn.close()
     except Exception as e:
         logger.error(f"Error querying cumulative history: {e}")
         return []
-
-
-def update_hardware_daily_totals(inv_id: str, hw_totals: Dict[str, float]):
-    """
-    Updates the daily totals directly from the hardware's daily energy registers.
-    """
-    try:
-        now_pkt = datetime.now(PKT)
-        date_str = now_pkt.strftime("%Y-%m-%d")
-        ts_1m = now_pkt.strftime("%Y-%m-%d %H:%M:00")
-        
-        conn = get_db_connection()
-        try:
-            s_kwh = hw_totals.get('solar', 0.0)
-            l_kwh = hw_totals.get('load', 0.0)
-            gi_kwh = hw_totals.get('grid_import', 0.0)
-            ge_kwh = hw_totals.get('grid_export', 0.0)
-            bc_kwh = hw_totals.get('battery_charge', 0.0)
-            bd_kwh = hw_totals.get('battery_discharge', 0.0)
-            
-            # Fetch previous to prevent overwriting with 0 if hardware read failed
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT solar_kwh, load_kwh, grid_import_kwh, grid_export_kwh, battery_charge_kwh, battery_discharge_kwh
-                FROM daily_totals
-                WHERE date = ? AND inverter_id = ?
-            """, (date_str, inv_id))
-            prev = cursor.fetchone()
-            
-            if prev:
-                if s_kwh == 0.0: s_kwh = prev["solar_kwh"]
-                if l_kwh == 0.0: l_kwh = prev["load_kwh"]
-                if gi_kwh == 0.0: gi_kwh = prev["grid_import_kwh"]
-                if ge_kwh == 0.0: ge_kwh = prev["grid_export_kwh"]
-                if bc_kwh == 0.0: bc_kwh = prev["battery_charge_kwh"]
-                if bd_kwh == 0.0: bd_kwh = prev["battery_discharge_kwh"]
-
-            # Update daily_totals
-            conn.execute("""
-                INSERT OR REPLACE INTO daily_totals 
-                (date, inverter_id, solar_kwh, load_kwh, grid_import_kwh, grid_export_kwh, battery_charge_kwh, battery_discharge_kwh, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-            """, (date_str, inv_id, s_kwh, l_kwh, gi_kwh, ge_kwh, bc_kwh, bd_kwh))
-            
-            # Save 1-minute snapshot for cumulative graph
-            conn.execute("""
-                INSERT OR REPLACE INTO cumulative_snapshots
-                (timestamp, date, inverter_id, solar_kwh, load_kwh, grid_import_kwh, grid_export_kwh, battery_charge_kwh, battery_discharge_kwh)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (ts_1m, date_str, inv_id, s_kwh, l_kwh, gi_kwh, ge_kwh, bc_kwh, bd_kwh))
-            
-            conn.commit()
-        finally:
-            conn.close()
-    except Exception as e:
-        logger.error(f"Error updating hardware daily totals: {e}")
-
-
-# --- AUTOMATION & TIMER DB FUNCTIONS ---
-
 def query_automations() -> List[Dict[str, Any]]:
     """Retrieve all configured automations."""
     try:
@@ -1113,7 +1243,11 @@ def save_automation(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
                     time_of_day=excluded.time_of_day,
                     inverter_id=excluded.inverter_id,
                     enabled=excluded.enabled,
-                    actions=excluded.actions
+                    actions=excluded.actions,
+                    -- Rescheduling clears the "already ran today" stamp so a
+                    -- time moved later in the same day still fires.
+                    last_triggered=CASE WHEN automations.time_of_day != excluded.time_of_day
+                                        THEN NULL ELSE automations.last_triggered END
             """, (auto_id, name, time_of_day, inverter_id, enabled, actions))
 
             conn.commit()
@@ -1175,14 +1309,17 @@ def get_due_automations(current_time_hhmm: str, current_date_str: str) -> List[D
     try:
         conn = get_db_connection()
         try:
-            trigger_stamp = f"{current_date_str} {current_time_hhmm}"
+            # Match every automation whose time has come and which has not run
+            # today, rather than only those matching the current minute exactly.
+            # A polling cycle can overrun a minute (serial reads are slow), and
+            # an exact match silently skipped the automation for the whole day.
             rows = conn.execute("""
                 SELECT id, name, time_of_day, inverter_id, actions, last_triggered
                 FROM automations
-                WHERE enabled = 1 
-                  AND time_of_day = ? 
-                  AND (last_triggered IS NULL OR last_triggered != ?)
-            """, (current_time_hhmm, trigger_stamp)).fetchall()
+                WHERE enabled = 1
+                  AND time_of_day <= ?
+                  AND (last_triggered IS NULL OR substr(last_triggered, 1, 10) != ?)
+            """, (current_time_hhmm, current_date_str)).fetchall()
 
             due = []
             for r in rows:
@@ -1199,10 +1336,6 @@ def get_due_automations(current_time_hhmm: str, current_date_str: str) -> List[D
                     "actions": actions_list
                 })
 
-                # Mark triggered stamp immediately
-                conn.execute("UPDATE automations SET last_triggered = ? WHERE id = ?", (trigger_stamp, r["id"]))
-
-            conn.commit()
             return due
         finally:
             conn.close()
@@ -1211,39 +1344,21 @@ def get_due_automations(current_time_hhmm: str, current_date_str: str) -> List[D
         return []
 
 
-def save_inverter_setting_override(inverter_id: str, setting_key: str, setting_val: float):
-    """Save/update a voltage setting override in SQLite DB."""
+def mark_automation_triggered(auto_id: str, current_date_str: str, current_time_hhmm: str):
+    """
+    Record that an automation ran. Called only after its commands were actually
+    delivered, so a failed serial write is retried on the next cycle instead of
+    being silently swallowed for the rest of the day.
+    """
     try:
         conn = get_db_connection()
         try:
-            conn.execute("""
-                INSERT INTO inverter_settings_store (inverter_id, setting_key, setting_val, updated_at)
-                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-                ON CONFLICT(inverter_id, setting_key) DO UPDATE SET
-                    setting_val=excluded.setting_val,
-                    updated_at=CURRENT_TIMESTAMP
-            """, (inverter_id, setting_key, float(setting_val)))
+            conn.execute(
+                "UPDATE automations SET last_triggered = ? WHERE id = ?",
+                (f"{current_date_str} {current_time_hhmm}", auto_id)
+            )
             conn.commit()
         finally:
             conn.close()
     except Exception as e:
-        logger.error(f"Error saving setting override for {inverter_id} ({setting_key}): {e}")
-
-
-def get_inverter_setting_override(inverter_id: str, setting_key: str, default_val: float) -> float:
-    """Retrieve saved voltage setting override from SQLite DB or return default_val."""
-    try:
-        conn = get_db_connection()
-        try:
-            row = conn.execute("""
-                SELECT setting_val FROM inverter_settings_store
-                WHERE inverter_id = ? AND setting_key = ?
-            """, (inverter_id, setting_key)).fetchone()
-            if row and row["setting_val"] is not None:
-                return float(row["setting_val"])
-            return default_val
-        finally:
-            conn.close()
-    except Exception as e:
-        logger.error(f"Error getting setting override for {inverter_id} ({setting_key}): {e}")
-        return default_val
+        logger.error(f"Error stamping automation {auto_id} as triggered: {e}")

@@ -10,6 +10,14 @@ import db
 from dess_scraper import dess_scraper
 
 def backfill_today():
+    """
+    Pull today's 10-minute intraday curve from DESSMonitor into telemetry_history.
+
+    Note the rows this writes are 10 minutes apart, not one minute. The energy
+    integration in db.py measures the real spacing between samples, so that is
+    handled correctly -- but do not reintroduce any code that assumes a fixed
+    per-row duration.
+    """
     today_str = datetime.now(db.PKT).strftime("%Y-%m-%d")
     print(f"Backfilling today ({today_str}) intraday telemetry from DESSMonitor...")
 
@@ -62,11 +70,19 @@ def backfill_today():
                 bat_w = (delta_bc - delta_bd) * 6.0 * 1000.0
                 bat_pct = r.get("batteryLevel", 80.0)
 
-                # Upsert into telemetry_history
+                # Upsert into telemetry_history. A plain INSERT duplicated every
+                # row on a re-run, and each duplicate was counted again by the
+                # energy integration.
                 conn.execute("""
                     INSERT INTO telemetry_history
                     (timestamp, inverter_id, solar_w, load_w, grid_w, battery_w, battery_pct, battery_v, grid_v, temp_c)
                     VALUES (?, ?, ?, ?, ?, ?, ?, 53.3, 230.0, 45.0)
+                    ON CONFLICT(timestamp, inverter_id) DO UPDATE SET
+                        solar_w=excluded.solar_w,
+                        load_w=excluded.load_w,
+                        grid_w=excluded.grid_w,
+                        battery_w=excluded.battery_w,
+                        battery_pct=excluded.battery_pct
                 """, (ts_str, inv_id, solar_w, load_w, grid_w, bat_w, bat_pct))
 
                 # Upsert into cumulative_snapshots

@@ -1,7 +1,7 @@
 version: '3.8'
 
 services:
-  # Python HID USB Inverter Telemetry Backend
+  # Python RS232/RS485 Inverter + BMS Telemetry Backend
   solar-backend:
     build:
       context: ./backend
@@ -12,6 +12,22 @@ services:
       - "8000:8000"
     # CRITICAL: Grant privileged hardware access and map host /dev for USB HID devices (/dev/hidraw*)
     privileged: true
+    environment:
+      # Shared secret required by every write endpoint (inverter settings,
+      # automations, backfill, reset, restart). Leave unset and those endpoints
+      # stay open to anyone who can reach the port -- including any website the
+      # browser visits, because CORS is permissive. Set the same value in the
+      # dashboard via  localStorage.setItem('solar_api_token', '<token>').
+      - SOLAR_API_TOKEN=${SOLAR_API_TOKEN:-}
+      # Comma-separated browser origins allowed to call the API, or "*".
+      - SOLAR_ALLOWED_ORIGINS=${SOLAR_ALLOWED_ORIGINS:-*}
+      # Days of 1-minute telemetry to keep. 0 (the default) keeps everything;
+      # daily/monthly/yearly totals live in daily_totals and are never purged.
+      - SOLAR_TELEMETRY_RETENTION_DAYS=${SOLAR_TELEMETRY_RETENTION_DAYS:-0}
+      # DESSMonitor credentials for historical backfill. Prefer these over
+      # backend/dess_credentials.json.
+      - DESS_USER=${DESS_USER:-}
+      - DESS_PASS=${DESS_PASS:-}
     volumes:
       - /dev:/dev
       - ./backend:/app

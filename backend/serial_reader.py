@@ -32,17 +32,55 @@ def crc16_voltronic(data: bytes) -> bytes:
             else:
                 crc = crc << 1
             crc &= 0xFFFF
-    
+
     crc_high = (crc >> 8) & 0xFF
     crc_low = crc & 0xFF
-    
+
     # Voltronic escapes certain CRCs
     if crc_high in (0x0A, 0x0D, 0x28):
         crc_high += 1
     if crc_low in (0x0A, 0x0D, 0x28):
         crc_low += 1
-        
+
     return bytes([crc_high, crc_low])
+
+
+def check_crc(frame: bytes) -> bool:
+    """
+    Validate a Voltronic reply frame (payload + 2 CRC bytes, CR already stripped).
+
+    The protocol has no length field and no framing beyond a trailing CR, so a
+    late or truncated reply is otherwise indistinguishable from the answer to the
+    command that follows it -- which silently swaps one energy register for
+    another. The CRC is the only thing that catches it.
+    """
+    if len(frame) < 3:
+        return False
+    payload, crc = frame[:-2], frame[-2:]
+    if crc16_voltronic(payload) == crc:
+        return True
+    # Some firmware omits the 0x0A/0x0D/0x28 escaping on replies; accept the
+    # unescaped form too rather than rejecting an otherwise good frame.
+    raw = crc16_voltronic(payload)
+    unescaped = bytes(b - 1 if b in (0x0B, 0x0E, 0x29) else b for b in raw)
+    return unescaped == crc
+
+
+def read_frame(ser, size: int = 150):
+    """
+    Read one reply frame and report whether its CRC checked out.
+
+    Returns (text, crc_ok). `text` is the decoded payload without the CRC bytes
+    or the trailing CR; it is returned even when the CRC fails so callers can
+    retry first and fall back to it only as a last resort.
+    """
+    raw = ser.read_until(b'\r', size=size)
+    if not raw:
+        return "", False
+    body = raw[:-1] if raw.endswith(b'\r') else raw
+    ok = check_crc(body)
+    payload = body[:-2] if ok else body
+    return payload.decode('ascii', errors='ignore').strip(), ok
 
 
 class SerialInverterReader:
@@ -105,7 +143,7 @@ class SerialInverterReader:
 
         # Knox MPPT String 1 (PV1)
         pv1_w = float(parts[19]) if len(parts) >= 20 else (pv_input_current * pv_input_voltage)
-        
+
         # Knox MPPT String 2 (PV2 from QPIGS2 command)
         pv2_current, pv2_voltage, pv2_w = 0.0, 0.0, 0.0
         if qpigs2_str and qpigs2_str.startswith('('):
@@ -122,7 +160,7 @@ class SerialInverterReader:
         solar_kw = round((pv1_w + pv2_w) / 1000.0, 2)
         load_kw = round(ac_out_active_power / 1000.0, 2)
         battery_net_power = round(((battery_charge_current - battery_discharge_current) * battery_voltage) / 1000.0, 2)
-        
+
         # Display PV Voltage & Current from active MPPT string
         effective_pv_voltage = pv_input_voltage if pv_input_voltage > 0 else pv2_voltage
         effective_pv_current = pv_input_current if pv_input_current > 0 else pv2_current
@@ -145,13 +183,13 @@ class SerialInverterReader:
         # Basic Sanity Bounds (Max 15kW per inverter, realistic voltages/temps)
         if abs(grid_kw) > 15.0 or abs(load_kw) > 15.0 or abs(solar_kw) > 15.0 or abs(battery_net_power) > 15.0:
             raise ValueError(f"Absurd power values (>15kW) detected, ignoring frame: {qpigs_str}")
-            
+
         if battery_voltage > 70.0 or battery_voltage < 35.0:
             raise ValueError(f"Absurd battery voltage ({battery_voltage}V) detected, ignoring frame")
 
         if battery_capacity_pct > 100.0 or battery_capacity_pct < 0.0:
             raise ValueError(f"Absurd battery SOC ({battery_capacity_pct}%) detected, ignoring corrupted frame")
-            
+
         if inverter_temp > 120.0 or inverter_temp < -20.0:
             raise ValueError(f"Absurd inverter temp ({inverter_temp}C) detected, ignoring frame")
 
@@ -197,12 +235,12 @@ class SerialInverterReader:
                 self.device_map = {}
                 qid_cmd = b'QID' + crc16_voltronic(b'QID') + b'\r'
                 qpgs0_cmd = b'QPGS0' + crc16_voltronic(b'QPGS0') + b'\r'
-                
+
                 for port in ports:
                     try:
                         sn = None
                         s = serial.Serial(port, 2400, timeout=1.0)
-                        
+
                         # 1. Try QID command
                         s.reset_input_buffer()
                         s.write(qid_cmd)
@@ -244,30 +282,47 @@ class SerialInverterReader:
             for inv_id, port in self.device_map.items():
                 try:
                     ser = serial.Serial(port, 2400, timeout=1.5)
-                    
+
+                    fallback = None
                     for attempt in range(3):
                         ser.reset_input_buffer()
                         ser.write(cmd_qpigs)
-                        resp1 = ser.read_until(b'\r', size=150)
-                        
+                        d1, ok1 = read_frame(ser)
+
                         time.sleep(0.2)
                         ser.reset_input_buffer()
                         ser.write(cmd_qpigs2)
-                        resp2 = ser.read_until(b'\r', size=150)
-                        
-                        d1 = resp1.decode('ascii', errors='ignore').strip() if resp1 else ""
-                        d2 = resp2.decode('ascii', errors='ignore').strip() if resp2 else ""
-                        
-                        if d1 and d1.startswith('('):
-                            try:
-                                readings[inv_id] = self.parse_qpigs(d1, inv_id, d2)
-                                break # Clean read successful
-                            except Exception as parse_e:
-                                time.sleep(0.2)
-                                continue
-                                
+                        d2, ok2 = read_frame(ser)
+
+                        if not d1 or not d1.startswith('('):
+                            time.sleep(0.2)
+                            continue
+
+                        try:
+                            parsed = self.parse_qpigs(d1, inv_id, d2 if ok2 else None)
+                        except Exception:
+                            time.sleep(0.2)
+                            continue
+
+                        if ok1:
+                            readings[inv_id] = parsed
+                            break
+
+                        # Structurally valid but the CRC did not match. Retry for
+                        # a clean frame; only use this one if every attempt fails,
+                        # so a flaky line degrades instead of going dark.
+                        fallback = parsed
+                        logger.warning(
+                            f"CRC mismatch on QPIGS from {inv_id} (attempt {attempt + 1}/3), retrying"
+                        )
+                        time.sleep(0.2)
+                    else:
+                        if fallback is not None:
+                            logger.warning(f"Using CRC-failed QPIGS frame for {inv_id} after 3 attempts")
+                            readings[inv_id] = fallback
+
                     ser.close()
-                        
+
                 except Exception as e:
                     logger.error(f"Serial port exception on {port} ({inv_id}): {e}")
 
@@ -388,24 +443,29 @@ class SerialInverterReader:
             "readings_count": len(readings_list)
         }
 
-    def parse_total(self, data_str: str) -> float:
-        """Parse Voltronic lifetime accumulated energy (10-digit 100Wh counter -> float kWh)."""
+    def parse_total(self, data_str: str) -> Optional[float]:
+        """
+        Parse a Voltronic lifetime energy counter into kWh.
+
+        Returns None when the reply cannot be parsed, so callers can tell a
+        failed read apart from a genuine zero. Treating a failed read as 0.0 is
+        what let a bad frame become a start-of-day baseline and fabricate an
+        entire day's worth of energy.
+        """
         try:
             import re
-            match = re.match(r'^\((\d+)', data_str)
+            match = re.match(r'^\((\d+)', data_str or "")
             if match:
-                val_str = match.group(1)
                 # Voltronic lifetime counters are 10-digit numbers in 100Wh units (0.1 kWh)
-                val_raw = float(val_str)
-                return round(val_raw / 100.0, 1)
+                return round(float(match.group(1)) / 100.0, 1)
         except Exception:
             pass
-        return 0.0
+        return None
 
     def poll_daily_totals(self) -> Dict[str, Dict[str, float]]:
         """Poll lifetime hardware energy registers (QET, QLT, QGT, QFT, QCT, QDT) from all connected inverters."""
         totals = {}
-        
+
         cmds = {
             'solar': 'QET',
             'load': 'QLT',
@@ -414,46 +474,70 @@ class SerialInverterReader:
             'battery_charge': 'QCT',
             'battery_discharge': 'QDT'
         }
-        
+
         # Ensure mapping exists
         if not self.device_map:
             self.poll_serial_ports()
-            
+
         with self.serial_lock:
             for inv_id, port in self.device_map.items():
                 inv_totals = {}
                 try:
                     ser = serial.Serial(port, 2400, timeout=1.0)
-                    
+
                     for key, cmd in cmds.items():
                         cb = cmd.encode('ascii')
                         full_cmd = cb + crc16_voltronic(cb) + b'\r'
-                        
-                        parsed_val = 0.0
+
+                        # A verified frame is accepted immediately. Failing that,
+                        # two attempts agreeing on the same value is strong enough
+                        # evidence the frame is not a desynced reply to the
+                        # previous command -- which is the failure this guards
+                        # against. Never trust a single unverified frame.
+                        parsed_val = None
+                        seen = []
                         for attempt in range(3):
-                            ser.reset_input_buffer()
-                            ser.write(full_cmd)
-                            
                             try:
-                                resp = ser.read_until(b'\r', size=50)
-                                if resp and resp.startswith(b'('):
-                                    decoded = resp.decode('ascii', errors='ignore').strip()
-                                    parsed_val = self.parse_total(decoded)
-                                    break
+                                ser.reset_input_buffer()
+                                ser.write(full_cmd)
+                                decoded, crc_ok = read_frame(ser, size=50)
+                                candidate = self.parse_total(decoded) if decoded.startswith('(') else None
+
+                                if candidate is not None:
+                                    if crc_ok:
+                                        parsed_val = candidate
+                                        break
+                                    seen.append(candidate)
+                                    logger.warning(
+                                        f"CRC mismatch on {cmd} from {inv_id} (attempt {attempt + 1}/3)"
+                                    )
                             except Exception:
-                                time.sleep(0.15)
-                                continue
-                                
+                                pass
+                            time.sleep(0.15)
+
+                        if parsed_val is None and seen:
+                            agreed = next((v for v in seen if seen.count(v) >= 2), None)
+                            if agreed is not None:
+                                logger.warning(
+                                    f"Accepting CRC-failed {cmd} for {inv_id}: {agreed} kWh "
+                                    f"(consistent across retries)"
+                                )
+                                parsed_val = agreed
+
+                        if parsed_val is None:
+                            logger.warning(f"Could not read lifetime register {cmd} for {inv_id}")
+
+                        # None marks an unreadable register; the caller holds the
+                        # previous value rather than writing a zero over it.
                         inv_totals[key] = parsed_val
                         time.sleep(0.05) # Brief pause between commands
-                        
+
                     ser.close()
                 except Exception as e:
                     logger.error(f"Error reading lifetime totals on {port} ({inv_id}): {e}")
-                
-                # Use 0.0 defaults if disconnected
-                totals[inv_id] = inv_totals if inv_totals else {k: 0.0 for k in cmds.keys()}
-            
+
+                totals[inv_id] = inv_totals if inv_totals else {k: None for k in cmds.keys()}
+
         return totals
 
     def get_inverter_settings(self, inverter_id: str) -> Dict[str, Any]:
@@ -484,21 +568,21 @@ class SerialInverterReader:
                     cb = b'QPIRI'
                     ser.reset_input_buffer()
                     ser.write(cb + crc16_voltronic(cb) + b'\r')
-                    res = ser.read_until(b'\r', size=150).decode('ascii', errors='ignore').strip()
+                    res, _crc_ok = read_frame(ser, size=150)
 
                     if res.startswith('(') and len(res.split()) >= 20:
                         qpiri_resp = res
                         time.sleep(0.1)
 
-                        # 2. Query QFLAG (Enable/Disable Flags including Feed-to-Grid 'b')
+                        # 2. Query QFLAG (Enable/Disable Flags including Feed-to-Grid 'd')
                         cb = b'QFLAG'
                         ser.reset_input_buffer()
                         ser.write(cb + crc16_voltronic(cb) + b'\r')
-                        qflag_resp = ser.read_until(b'\r', size=150).decode('ascii', errors='ignore').strip()
-                        
+                        qflag_resp, _ = read_frame(ser, size=150)
+
                         ser.close()
                         break
-                    
+
                     ser.close()
                 except Exception as e:
                     logger.warning(f"Attempt {attempt}/3 querying serial port {port} for {inverter_id} failed: {e}")
@@ -511,7 +595,7 @@ class SerialInverterReader:
         charger_code = "0"
         machine_type = "0"
         feed_enabled = False
-        
+
         v_back_grid = 52.0
         v_cutoff = 46.0
         v_bulk = 57.6

@@ -1,14 +1,47 @@
 import os
+import json
 import time
 import hashlib
 import logging
 import requests
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, List, Optional
 
 logger = logging.getLogger("DESS_SCRAPER")
 
-DESS_USER = os.getenv("DESS_USER", "Jawad-HybridKnox")
-DESS_PASS = os.getenv("DESS_PASS", "sadeem1234")
+# Pakistan Standard Time, matching db.PKT. Imported lazily to avoid a circular
+# import at module load.
+PKT = timezone(timedelta(hours=5))
+
+CREDENTIALS_FILE = os.path.join(os.path.dirname(__file__), "dess_credentials.json")
+
+
+def _load_credentials():
+    """
+    DESSMonitor credentials, from the environment first and a gitignored local
+    file second. They used to be hardcoded as defaults in this module, which put
+    a live account password in the repository.
+    """
+    user = os.getenv("DESS_USER", "").strip()
+    password = os.getenv("DESS_PASS", "").strip()
+    if user and password:
+        return user, password
+
+    try:
+        with open(CREDENTIALS_FILE, encoding="utf-8") as fh:
+            data = json.load(fh)
+        return str(data.get("user", "")).strip(), str(data.get("password", "")).strip()
+    except FileNotFoundError:
+        logger.warning(
+            "No DESSMonitor credentials: set DESS_USER/DESS_PASS or create %s. "
+            "Historical backfill will be unavailable.", CREDENTIALS_FILE
+        )
+    except Exception as e:
+        logger.error(f"Could not read {CREDENTIALS_FILE}: {e}")
+    return "", ""
+
+
+DESS_USER, DESS_PASS = _load_credentials()
 DESS_BASE = "https://web.dessmonitor.com/public/"
 COMPANY_KEY = "bnrl_frRFjEz8Mkn"
 
@@ -21,6 +54,21 @@ INVERTER_DEVICES = [
 
 # Parameters that hold daily kWh totals on the DESS API
 DAILY_ENERGY_PARAMS = "ENERGY_TODAY,LOAD_ENERGY_TODAY"
+
+
+def _devices_for(inverter_id: str) -> List[Dict[str, str]]:
+    """
+    Resolve an inverter id to the devices to query.
+
+    An unknown id used to fall back to all three inverters, so a typo silently
+    stored plant-wide totals under a single inverter's row.
+    """
+    if inverter_id == "all":
+        return list(INVERTER_DEVICES)
+    devices = [d for d in INVERTER_DEVICES if d["id"] == inverter_id]
+    if not devices:
+        logger.error(f"Unknown inverter id '{inverter_id}' requested from DESSMonitor")
+    return devices
 
 
 class DESSMonitorScraper:
@@ -36,6 +84,9 @@ class DESSMonitorScraper:
 
     def login(self) -> bool:
         """Authenticate with DESSMonitor public API using SHA1 signature auth."""
+        if not DESS_USER or not DESS_PASS:
+            logger.error("DESSMonitor credentials are not configured; cannot log in.")
+            return False
         try:
             salt = str(int(time.time() * 1000))
             pass_hash = self._sha1(DESS_PASS)
@@ -112,14 +163,14 @@ class DESSMonitorScraper:
             f"&i18n=en_US&pn={pn}&devcode=6443&devaddr=1&sn={sn}&date={date_str}"
         )
         sign = self._sha1(f"{salt}{self.secret}{self.token}{query}")
-        
+
         params = {
-            "sign": sign, "salt": salt, "token": self.token, 
-            "action": "queryDeviceDataOneDay", "source": "1", 
-            "i18n": "en_US", 
+            "sign": sign, "salt": salt, "token": self.token,
+            "action": "queryDeviceDataOneDay", "source": "1",
+            "i18n": "en_US",
             "pn": pn, "devcode": "6443", "devaddr": "1", "sn": sn, "date": date_str
         }
-        
+
         try:
             resp = self.session.get(DESS_BASE, params=params, timeout=10).json()
             if resp.get("err") == 0 and "dat" in resp:
@@ -128,7 +179,7 @@ class DESSMonitorScraper:
                 rows = data.get("row", [])
                 if not titles or not rows:
                     return None
-                
+
                 col_idx = {t.get("title"): i for i, t in enumerate(titles)}
                 latest_row = rows[-1]
                 latest_field = latest_row.get("field", [])
@@ -183,16 +234,17 @@ class DESSMonitorScraper:
         Fetch daily kWh totals for one inverter for a given month by fetching each day.
         """
         import calendar
-        from datetime import datetime, date
-        
+
         try:
             y, m = map(int, year_month.split("-"))
             _, last_day = calendar.monthrange(y, m)
         except ValueError:
             return []
 
-        # Don't fetch into the future
-        today = datetime.now().date()
+        # Don't fetch into the future. This has to use PKT like the rest of the
+        # app: with the container clock on UTC, everything between 00:00 and
+        # 05:00 local time treated the current day as future and skipped it.
+        today = datetime.now(PKT).date()
         if y == today.year and m == today.month:
             last_day = today.day
         elif y > today.year or (y == today.year and m > today.month):
@@ -222,7 +274,7 @@ class DESSMonitorScraper:
                 })
             # Slight delay to avoid hammering the API
             time.sleep(0.1)
-            
+
         return results
 
     def fetch_daily_totals_for_day(self, date_str: str, inverter_id: str = "all") -> List[Dict[str, Any]]:
@@ -235,12 +287,9 @@ class DESSMonitorScraper:
                 if not self.login():
                     return []
 
-            if inverter_id == "all":
-                devices = INVERTER_DEVICES
-            else:
-                devices = [d for d in INVERTER_DEVICES if d["id"] == inverter_id]
-                if not devices:
-                    devices = INVERTER_DEVICES
+            devices = _devices_for(inverter_id)
+            if not devices:
+                return []
 
             aggregated = {
                 "time": date_str[-2:],  # Use just the day number for consistency if needed, or date_str
@@ -248,7 +297,7 @@ class DESSMonitorScraper:
                 "gridImport": 0.0, "gridExport": 0.0,
                 "batteryCharge": 0.0, "batteryDischarge": 0.0
             }
-            
+
             # Note: For consistency with how db.py expects time format (YYYY-MM-DD)
             # we will return date_str as "time"
             aggregated["time"] = date_str
@@ -285,20 +334,16 @@ class DESSMonitorScraper:
                 if not self.login():
                     return []
 
-            # Determine which inverter(s) to query
-            if inverter_id == "all":
-                devices = INVERTER_DEVICES
-            else:
-                devices = [d for d in INVERTER_DEVICES if d["id"] == inverter_id]
-                if not devices:
-                    devices = INVERTER_DEVICES  # fallback to all
+            devices = _devices_for(inverter_id)
+            if not devices:
+                return []
 
             # Fetch data for each inverter and aggregate
             aggregated = {}  # day_str -> {solar, load, ...}
 
             for dev in devices:
                 records = self._fetch_month_daily_totals(dev["sn"], dev["pn"], year_month)
-                
+
                 if records is None:
                     # Possible auth expiry — re-login and retry once
                     logger.warning(f"DESS API returned error for {dev['id']}, re-authenticating...")

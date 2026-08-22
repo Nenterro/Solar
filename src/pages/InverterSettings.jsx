@@ -27,14 +27,22 @@ function cleanLabel(str) {
 
 export default function InverterSettings() {
   const { telemetry } = useTelemetry() || { telemetry: {} };
+  // This page controls one physical inverter, so "all" is not a valid target:
+  // requesting ?inverter=all returns a nested per-inverter map with no .error,
+  // which the page treated as a successful load and rendered as blank/Unknown.
   const [selectedInverter, setSelectedInverter] = useState(() => {
-    return localStorage.getItem('solar_selected_inverter') || 'inv3';
+    const stored = localStorage.getItem('solar_selected_inverter');
+    return stored && stored !== 'all' ? stored : 'inv3';
   });
 
   const handleInverterChange = (val) => {
     const target = val === 'all' ? 'inv3' : val;
     setSelectedInverter(target);
-    localStorage.setItem('solar_selected_inverter', target);
+    // Only persist a real user choice. Writing the coerced 'inv3' back to the
+    // shared key silently changed the selected inverter on every other page.
+    if (val !== 'all') {
+      localStorage.setItem('solar_selected_inverter', target);
+    }
   };
 
   const [settingsData, setSettingsData] = useState(null);

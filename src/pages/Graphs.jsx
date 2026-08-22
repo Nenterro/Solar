@@ -215,11 +215,15 @@ export default function Graphs() {
               } else if (totalsData.totals && totalsData.totals.solar !== undefined) {
                 dayObj = totalsData.totals;
               }
-              if (isMounted && dayObj) {
+              // Always assign, including null. Only assigning a truthy value
+              // left the previous day's totals on screen when the newly
+              // selected day had no data.
+              if (isMounted) {
                 setDailyScrapedTotals(dayObj);
               }
             } catch (tErr) {
-              // Fallback — no scraped totals for this day yet
+              // No totals for this day: clear rather than keep the last day's.
+              if (isMounted) setDailyScrapedTotals(null);
             }
           }
         } else if (viewMode === 'monthly') {

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { Battery as BatteryIcon, Zap, Thermometer, Activity, Calendar as CalendarIcon, ChevronLeft, ChevronRight, BatteryCharging, BatteryWarning } from 'lucide-react';
 import { format, addDays, subDays, isSameDay } from 'date-fns';
@@ -89,20 +89,25 @@ export default function Battery() {
   // Calculate History Metrics directly from Knox BMS RS485
   const totalChargeKwh = bmsTotals?.bms_charge_kwh ?? (data?.bms_charge_kwh ?? 0);
   const totalDischargeKwh = bmsTotals?.bms_discharge_kwh ?? (data?.bms_discharge_kwh ?? 0);
-  let timeOnBatteryMins = 0;
+  // "Time on battery" = minutes with no solar, no grid import, and the battery
+  // discharging. /api/history returns kW under solar / gridImport /
+  // batteryDischarge; this previously read solar_w / grid_w / battery_w, which
+  // those records do not have, so every value was undefined and the figure was
+  // permanently 0h 0m. Counting distinct minute labels also keeps a day that
+  // still holds duplicate samples from being counted twice.
+  const timeOnBatteryMins = useMemo(() => {
+    const minutes = new Set();
+    historyData.forEach(record => {
+      const solarKw = record.solar || 0;
+      const gridImportKw = record.gridImport || 0;
+      const dischargeKw = record.batteryDischarge || 0;
 
-  historyData.forEach(record => {
-    const solarKw = (record.solar_w || 0) / 1000.0;
-    const gridKw = (record.grid_w || 0) / 1000.0;
-    const batKw = (record.battery_w || 0) / 1000.0;
-    
-    // Battery net power is negative when discharging. 
-    // The user's definition of "time on battery":
-    // Solar is 0 (<= 0.02 to handle floating noise), Grid Import is 0 (<= 0.02), Battery is discharging (< -0.02)
-    if (solarKw <= 0.02 && gridKw <= 0.02 && batKw < -0.02) {
-      timeOnBatteryMins++;
-    }
-  });
+      if (solarKw <= 0.02 && gridImportKw <= 0.02 && dischargeKw > 0.02) {
+        minutes.add(record.time);
+      }
+    });
+    return minutes.size;
+  }, [historyData]);
 
   const formatDuration = (mins) => {
     if (mins === 0) return "0h 0m";

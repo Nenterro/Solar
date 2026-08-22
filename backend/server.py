@@ -1,10 +1,12 @@
 import os
+import re
 import time
 import threading
 import logging
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, List, Optional
-from fastapi import FastAPI, Query, HTTPException, BackgroundTasks
+from fastapi import FastAPI, Query, HTTPException, BackgroundTasks, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
 
 import db
@@ -17,43 +19,159 @@ serial_reader_instance = serial_reader
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("SOLAR_SERVER")
 
-app = FastAPI(title="Solar Dashboard Backend Server", version="2.0")
-
 last_api_access_time = 0
 
-# CORS middleware for local & network access
+# --- Access control -----------------------------------------------------------
+#
+# This backend is reachable from the public internet, and its write endpoints
+# reconfigure real inverter hardware. Set SOLAR_API_TOKEN to require a matching
+# X-Solar-Token header on every mutating request. If it is unset the server
+# still runs (so an existing deployment keeps working) but logs a warning at
+# startup, and the read-only endpoints are unaffected either way.
+API_TOKEN = os.getenv("SOLAR_API_TOKEN", "").strip()
+
+# Comma-separated list of allowed browser origins, or "*".
+ALLOWED_ORIGINS = [o.strip() for o in os.getenv("SOLAR_ALLOWED_ORIGINS", "*").split(",") if o.strip()]
+
+
+def require_token(x_solar_token: Optional[str] = Header(default=None)):
+    """Dependency guarding every endpoint that changes state."""
+    if not API_TOKEN:
+        return
+    if x_solar_token != API_TOKEN:
+        raise HTTPException(status_code=401, detail="Missing or invalid X-Solar-Token")
+
+
+# --- Inverter command allow-list ----------------------------------------------
+#
+# Commands were previously passed through to the serial port verbatim, so any
+# page in the user's browser could send arbitrary Voltronic commands. Only the
+# settings the UI actually exposes are accepted, and voltage setpoints must fall
+# within ranges that are safe for a 48 V LiFePO4 bank.
+ALLOWED_COMMANDS = {
+    # Output source priority
+    "POP00", "POP01", "POP02",
+    # Charger source priority
+    "PCP01", "PCP02", "PCP03",
+    # Feed-to-grid enable / disable
+    "PEd", "PDd",
+}
+
+# prefix -> (min volts, max volts)
+ALLOWED_VOLTAGE_COMMANDS = {
+    "PBCV": (44.0, 54.0),   # back-to-grid voltage
+    "PBDV": (48.0, 58.0),   # back-to-discharge voltage
+    "PSDV": (40.0, 48.0),   # low-battery cut-off voltage
+    "PCVV": (48.0, 58.4),   # bulk / absorption charging voltage
+    "PBFT": (48.0, 58.4),   # float charging voltage
+}
+
+_VOLTAGE_CMD_RE = re.compile(r"^(" + "|".join(ALLOWED_VOLTAGE_COMMANDS) + r")(\d{2}\.\d)$")
+
+
+def validate_inverter_command(cmd: str) -> str:
+    """Return the command if it is permitted, otherwise raise HTTP 400."""
+    cmd = (cmd or "").strip()
+    if cmd in ALLOWED_COMMANDS:
+        return cmd
+
+    m = _VOLTAGE_CMD_RE.match(cmd)
+    if m:
+        prefix, value = m.group(1), float(m.group(2))
+        low, high = ALLOWED_VOLTAGE_COMMANDS[prefix]
+        if low <= value <= high:
+            return cmd
+        raise HTTPException(
+            status_code=400,
+            detail=f"{prefix} value {value}V is outside the safe range {low}-{high}V",
+        )
+
+    raise HTTPException(status_code=400, detail=f"Command '{cmd}' is not permitted")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    if not API_TOKEN:
+        logger.warning(
+            "SOLAR_API_TOKEN is not set: write endpoints are unauthenticated. "
+            "Set it in docker-compose.yml and in the dashboard's Backend settings."
+        )
+    threading.Thread(target=background_telemetry_loop, daemon=True, name="telemetry").start()
+    start_bms_poller()
+    try:
+        yield
+    finally:
+        db.release_writer_lock()
+
+
+app = FastAPI(title="Solar Dashboard Backend Server", version="2.1", lifespan=lifespan)
+
+# CORS for local & network access. Credentials are disabled: the API uses no
+# cookies, and "*" combined with allow_credentials causes Starlette to reflect
+# any origin back as trusted.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # Background 1-minute telemetry logger thread
+# Set once the writer lock has been lost, so the warning is logged only once.
+_writer_warned = False
+
+
 def background_telemetry_loop():
     logger.info("Starting background 1-minute telemetry logging thread...")
-    last_dess_poll_time = 0
-    last_db_log_time = 0
-    
-    # Ensure BMS poller is running
-    try:
-        from battery_bms import start_bms_poller
-        start_bms_poller()
-    except Exception as e:
-        logger.error(f"Failed to start BMS poller: {e}")
+    global _writer_warned
+    last_dess_poll_time = 0.0
+    last_db_log_time = 0.0
+    last_lock_refresh = 0.0
+    last_purge_time = time.time()
+    last_automation_check = 0.0
+    is_writer = False
 
     while True:
         try:
             now_sec = time.time()
+
+            # Exactly one process may poll the hardware and write telemetry.
+            # Two backend instances sharing solar.db each wrote their own sample
+            # every minute, and because energy is integrated per sample that
+            # doubled every daily total. Re-check periodically so this instance
+            # takes over automatically if the current writer dies.
+            if now_sec - last_lock_refresh >= 30:
+                last_lock_refresh = now_sec
+                is_writer = db.claim_writer_lock()
+                if not is_writer and not _writer_warned:
+                    _writer_warned = True
+                    logger.warning(
+                        "Another backend instance already owns the telemetry writer lock. "
+                        "This instance will serve the API read-only and will not poll hardware."
+                    )
+                elif is_writer and _writer_warned:
+                    _writer_warned = False
+                    logger.info("Acquired the telemetry writer lock; resuming hardware polling.")
+
+            if not is_writer:
+                time.sleep(1)
+                continue
+
             user_connected = (now_sec - last_api_access_time) < 10
-            
+
             import battery_bms
             battery_bms.fast_poll_active = user_connected
 
+            # Poll the inverters continuously while someone is watching the
+            # dashboard so the live view stays responsive, but persist a sample
+            # only once a minute.
             if user_connected or (now_sec - last_db_log_time >= 60):
-                # Poll BMS RS485
-                bms.poll_battery()
+                due_to_log = (now_sec - last_db_log_time) >= 60
+                if due_to_log:
+                    # Refresh the BMS immediately before persisting so the stored
+                    # SOC matches the stored inverter sample.
+                    bms.poll_battery()
                 bms_data = bms.get_latest_data()
                 bms_soc = float(bms_data.get("soc", 0.0))
                 bms_v = float(bms_data.get("voltage", 0.0))
@@ -66,57 +184,95 @@ def background_telemetry_loop():
 
                 if readings:
                     for inv_id in readings:
-                        if 0.0 <= bms_soc <= 100.0 and bms_soc > 0:
+                        if 0.0 < bms_soc <= 100.0:
                             readings[inv_id]["battery_capacity_pct"] = bms_soc
                         if 35.0 <= bms_v <= 70.0:
                             readings[inv_id]["battery_voltage"] = bms_v
 
-                now_sec = time.time()
-                # Log to SQLite only once every 60 seconds to prevent DB bloat
-                if now_sec - last_db_log_time >= 60:
-                    last_db_log_time = now_sec
+                if due_to_log:
+                    last_db_log_time = time.time()
                     db.log_telemetry_snapshot(readings, bms_power_w)
 
             # 2. Automatically poll hardware lifetime totals and calculate daily values
             now_dt = datetime.now()
-            if now_dt.second >= 50 and (now_sec - last_dess_poll_time > 40):
-                last_dess_poll_time = now_sec
+            if now_dt.second >= 50 and (time.time() - last_dess_poll_time > 40):
+                last_dess_poll_time = time.time()
                 hw_totals_map = serial_reader_instance.poll_daily_totals()
                 if hw_totals_map:
                     db.update_lifetime_totals_and_calculate_daily(hw_totals_map)
                     logger.info("Updated hardware lifetime-based daily totals in SQLite")
 
-            # 3. Check for due automations (timers) every minute
-            now_pkt = datetime.now(db.PKT)
-            time_hhmm = now_pkt.strftime("%H:%M")
-            date_str = now_pkt.strftime("%Y-%m-%d")
+            # 3. Check for due automations (timers). Every 15s is plenty: due
+            #    automations are matched by "time has passed and has not run
+            #    today", not by an exact minute, so nothing is missed.
+            if time.time() - last_automation_check >= 15:
+                last_automation_check = time.time()
+                run_due_automations()
 
-            due_automations = db.get_due_automations(time_hhmm, date_str)
-            if due_automations:
-                for auto in due_automations:
-                    logger.info(f"Triggering scheduled automation '{auto['name']}' ({auto['id']}) for inverter '{auto['inverter_id']}'")
-                    for action in auto.get("actions", []):
-                        cmd = action.get("command")
-                        if cmd:
-                            target_inv = auto.get("inverter_id", "all")
-                            if target_inv == "all":
-                                for inv_k in ["inv1", "inv2", "inv3"]:
-                                    res = serial_reader_instance.send_command(inv_k, cmd)
-                                    logger.info(f"Executed automation command {cmd} on {inv_k}: {res}")
-                            else:
-                                res = serial_reader_instance.send_command(target_inv, cmd)
-                                logger.info(f"Executed automation command {cmd} on {target_inv}: {res}")
+            # 4. Apply the telemetry retention window once a day (no-op unless
+            #    SOLAR_TELEMETRY_RETENTION_DAYS is set).
+            if time.time() - last_purge_time > 86400:
+                last_purge_time = time.time()
+                db.purge_old_telemetry()
 
         except Exception as e:
             logger.error(f"Error in background telemetry loop: {e}")
         time.sleep(1)
 
-# Start background thread on server startup
-@app.on_event("startup")
-def startup_event():
-    t = threading.Thread(target=background_telemetry_loop, daemon=True)
-    t.start()
-    start_bms_poller()
+
+def run_due_automations():
+    """
+    Fire any automation whose scheduled time has passed today.
+
+    A polling cycle can take longer than a minute (serial reads are slow), so
+    matching only the current HH:MM silently skipped automations. An automation
+    is stamped as run only once its commands have actually been delivered, so a
+    failed serial write is retried on the next cycle instead of being lost for
+    the rest of the day.
+    """
+    now_pkt = datetime.now(db.PKT)
+    time_hhmm = now_pkt.strftime("%H:%M")
+    date_str = now_pkt.strftime("%Y-%m-%d")
+
+    for auto in db.get_due_automations(time_hhmm, date_str):
+        logger.info(
+            f"Triggering scheduled automation '{auto['name']}' ({auto['id']}) "
+            f"for inverter '{auto['inverter_id']}'"
+        )
+        target_inv = auto.get("inverter_id", "all")
+        targets = ["inv1", "inv2", "inv3"] if target_inv == "all" else [target_inv]
+
+        delivered = False
+        failed = False
+        for action in auto.get("actions", []):
+            cmd = action.get("command")
+            if not cmd:
+                continue
+            try:
+                cmd = validate_inverter_command(cmd)
+            except HTTPException as e:
+                logger.error(f"Automation '{auto['name']}' has a rejected command {cmd!r}: {e.detail}")
+                continue
+            for inv_k in targets:
+                res = serial_reader_instance.send_command(inv_k, cmd)
+                logger.info(f"Executed automation command {cmd} on {inv_k}: {res}")
+                if res.get("success"):
+                    delivered = True
+                else:
+                    failed = True
+
+        if delivered and not failed:
+            db.mark_automation_triggered(auto["id"], date_str, auto.get("time_of_day", time_hhmm))
+        elif not delivered:
+            logger.warning(
+                f"Automation '{auto['name']}' delivered no commands; will retry on the next cycle"
+            )
+        else:
+            logger.warning(
+                f"Automation '{auto['name']}' only partly delivered; will retry on the next cycle"
+            )
+
+
 
 @app.get("/")
 def read_root():
@@ -136,20 +292,20 @@ def get_battery(date: Optional[str] = Query(None)):
     along with daily charge/discharge totals calculated from BMS RS485.
     """
     data = bms.get_latest_data()
-    
+
     # Calculate BMS battery power directly: P_bms = V_bms * I_bms
     bms_v = float(data.get("voltage", 0.0))
     bms_i = float(data.get("current", 0.0))
     bms_power = round(bms_v * bms_i, 2)
     data["power"] = bms_power
-    
+
     if bms_i > 0.5:
         data["state"] = "Charging"
     elif bms_i < -0.5:
         data["state"] = "Discharging"
     else:
         data["state"] = "Idle"
-        
+
     target_date = date or datetime.now(db.PKT).strftime("%Y-%m-%d")
     bms_totals = db.query_bms_daily_totals(target_date)
     data["bms_charge_kwh"] = bms_totals["bms_charge_kwh"]
@@ -163,7 +319,7 @@ def get_battery(date: Optional[str] = Query(None)):
                 data["temperature"] = round(sum(temps) / len(temps), 1)
     except Exception as e:
         logger.error(f"Error getting temp for BMS data: {e}")
-        
+
     return data
 
 @app.get("/api/bms_totals")
@@ -276,8 +432,7 @@ def get_dess_totals(
         logger.error(f"Error fetching DESS totals: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/backfill")
-@app.get("/api/backfill")
+@app.post("/api/backfill", dependencies=[Depends(require_token)])
 def trigger_backfill(
     start_date: Optional[str] = Query(None),
     end_date: Optional[str] = Query(None),
@@ -330,25 +485,32 @@ def trigger_backfill(
         logger.error(f"Error during backfill: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/restart_container")
-@app.post("/api/restart_container")
+@app.post("/api/restart_container", dependencies=[Depends(require_token)])
 def restart_container():
     """
-    Exits the process so Docker's restart: unless-stopped policy restarts the container
-    and loads the latest updated Python files from disk.
+    Exit the process so Docker's restart: unless-stopped policy restarts the
+    container and picks up updated Python files from disk.
+
+    POST only: as a GET this was reachable from a plain link or an image tag on
+    any page the user happened to open.
     """
     def _do_exit():
         time.sleep(0.5)
+        # Hand the writer lock over immediately so the replacement process does
+        # not have to wait for the stale-lock timeout before it starts logging.
+        db.release_writer_lock()
         os._exit(0)
     threading.Thread(target=_do_exit).start()
     return {"status": "restarting", "message": "Backend container restarting..."}
 
-@app.get("/api/nuke_db")
-@app.get("/api/reset_db")
-@app.post("/api/reset_db")
+@app.post("/api/reset_db", dependencies=[Depends(require_token)])
 def reset_database():
     """
-    Purge all old telemetry history and daily totals from SQLite DB.
+    Purge all telemetry history and daily totals from the SQLite DB.
+
+    POST only, and authenticated when a token is configured. The old GET aliases
+    (/api/nuke_db, /api/reset_db) meant a browser prefetch or a stray link could
+    destroy the entire history.
     """
     try:
         db.nuke_db()
@@ -372,20 +534,29 @@ def get_inverter_settings(inverter: str = Query("inv3")):
         logger.error(f"Error querying inverter settings: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/inverter_settings/update")
+@app.post("/api/inverter_settings/update", dependencies=[Depends(require_token)])
 def update_inverter_setting(payload: Dict[str, Any]):
     """
-    Update Inverter Setting by sending command (e.g. POP01, PCP02, PEb, PDb).
+    Apply an inverter setting (e.g. POP01, PCP02, PEd, PDd, PBCV52.0).
     Payload: {"inverter": "inv3", "command": "POP01"}
+
+    The command is checked against an allow-list before it reaches the serial
+    port; voltage setpoints must also fall inside a safe range. Previously any
+    string was written to the hardware verbatim.
     """
     try:
         inv_id = payload.get("inverter", "inv3")
+        if inv_id not in {c["id"] for c in INVERTERS_CONFIG}:
+            raise HTTPException(status_code=400, detail=f"Unknown inverter '{inv_id}'")
+
         cmd = payload.get("command")
         if not cmd:
             raise HTTPException(status_code=400, detail="Missing command parameter")
-        
-        res = serial_reader_instance.set_inverter_setting(inv_id, cmd)
-        return res
+        cmd = validate_inverter_command(cmd)
+
+        return serial_reader_instance.set_inverter_setting(inv_id, cmd)
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error updating inverter setting: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -415,7 +586,7 @@ def get_automations():
         logger.error(f"Error fetching automations: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/automations")
+@app.post("/api/automations", dependencies=[Depends(require_token)])
 def create_automation(payload: Dict[str, Any]):
     """Create a new automation."""
     try:
@@ -427,7 +598,7 @@ def create_automation(payload: Dict[str, Any]):
         logger.error(f"Error creating automation: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.put("/api/automations/{auto_id}")
+@app.put("/api/automations/{auto_id}", dependencies=[Depends(require_token)])
 def update_automation(auto_id: str, payload: Dict[str, Any]):
     """Update an existing automation."""
     try:
@@ -440,7 +611,7 @@ def update_automation(auto_id: str, payload: Dict[str, Any]):
         logger.error(f"Error updating automation: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.delete("/api/automations/{auto_id}")
+@app.delete("/api/automations/{auto_id}", dependencies=[Depends(require_token)])
 def delete_automation_endpoint(auto_id: str):
     """Delete an automation."""
     try:
@@ -450,7 +621,7 @@ def delete_automation_endpoint(auto_id: str):
         logger.error(f"Error deleting automation: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/automations/{auto_id}/toggle")
+@app.post("/api/automations/{auto_id}/toggle", dependencies=[Depends(require_token)])
 def toggle_automation_endpoint(auto_id: str):
     """Toggle automation enabled/disabled status."""
     try:

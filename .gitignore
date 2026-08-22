@@ -34,3 +34,10 @@ __pycache__/
 # Scratch test scripts at root level
 /*.py
 /*.sql
+
+# Secrets (never commit)
+backend/dess_credentials.json
+.env
+
+# Local database backups written by the telemetry de-duplication migration
+*.db.bak-*
