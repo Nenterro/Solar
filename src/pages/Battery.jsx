@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { Battery as BatteryIcon, Zap, Thermometer, Activity, Calendar as CalendarIcon, ChevronLeft, ChevronRight, BatteryCharging, BatteryWarning } from 'lucide-react';
+import { Battery as BatteryIcon, Zap, Thermometer, Activity, Calendar as CalendarIcon, ChevronLeft, ChevronRight, BatteryCharging } from 'lucide-react';
 import { format, addDays, subDays, isSameDay } from 'date-fns';
 import { fetchFromBackend } from '../utils/api';
 import './Battery.css';
@@ -28,7 +28,6 @@ export default function Battery() {
     state: "Loading...",
     status: "Connecting..."
   });
-  const [historyData, setHistoryData] = useState([]);
   const [dailyScrapedTotals, setDailyScrapedTotals] = useState(null);
   const [bmsTotals, setBmsTotals] = useState({ bms_charge_kwh: 0, bms_discharge_kwh: 0 });
   const [selectedDate, setSelectedDate] = useState(new Date());
@@ -41,17 +40,15 @@ export default function Battery() {
 
   useEffect(() => {
     let isMounted = true;
-    const fetchHistoryAndTotals = async () => {
+    const fetchTotals = async () => {
       const dateStr = format(selectedDate, 'yyyy-MM-dd');
       try {
-        const [histRes, totalsRes, bmsTotalsRes] = await Promise.all([
-          fetchFromBackend(`/api/history?date=${dateStr}&inverter=all&_t=${Date.now()}`),
+        const [totalsRes, bmsTotalsRes] = await Promise.all([
           fetchFromBackend(`/api/dess_totals?month=${dateStr.substring(0, 7)}&inverter=all`),
           fetchFromBackend(`/api/bms_totals?date=${dateStr}&_t=${Date.now()}`)
         ]);
-        
+
         if (isMounted) {
-          if (histRes.records) setHistoryData(histRes.records);
           if (bmsTotalsRes) setBmsTotals(bmsTotalsRes);
           
           let dayObj = null;
@@ -63,11 +60,11 @@ export default function Battery() {
           setDailyScrapedTotals(dayObj);
         }
       } catch (err) {
-        console.error("Failed to fetch battery history or totals", err);
+        console.error("Failed to fetch battery totals", err);
       }
     };
-    fetchHistoryAndTotals();
-    const histInterval = setInterval(fetchHistoryAndTotals, 60000);
+    fetchTotals();
+    const histInterval = setInterval(fetchTotals, 60000);
     return () => {
       isMounted = false;
       clearInterval(histInterval);
@@ -110,33 +107,6 @@ export default function Battery() {
     return (packAh * NOMINAL_PACK_VOLTAGE * BATTERY_PACK_COUNT) / 1000;
   }, [data.capacity_ah]);
   const availableKwh = (data.soc / 100) * bankCapacityKwh;
-  // "Time on battery" = minutes with no solar, no grid import, and the battery
-  // discharging. /api/history returns kW under solar / gridImport /
-  // batteryDischarge; this previously read solar_w / grid_w / battery_w, which
-  // those records do not have, so every value was undefined and the figure was
-  // permanently 0h 0m. Counting distinct minute labels also keeps a day that
-  // still holds duplicate samples from being counted twice.
-  const timeOnBatteryMins = useMemo(() => {
-    const minutes = new Set();
-    historyData.forEach(record => {
-      const solarKw = record.solar || 0;
-      const gridImportKw = record.gridImport || 0;
-      const dischargeKw = record.batteryDischarge || 0;
-
-      if (solarKw <= 0.02 && gridImportKw <= 0.02 && dischargeKw > 0.02) {
-        minutes.add(record.time);
-      }
-    });
-    return minutes.size;
-  }, [historyData]);
-
-  const formatDuration = (mins) => {
-    if (mins === 0) return "0h 0m";
-    const h = Math.floor(mins / 60);
-    const m = mins % 60;
-    return `${h}h ${m}m`;
-  };
-
   // Calculate circular progress dash array
   const radius = 72;
   const circumference = 2 * Math.PI * radius;
@@ -319,18 +289,6 @@ export default function Battery() {
         </div>
 
         <div className="analytics-grid">
-          <div className="metric-card glass-panel">
-            <div className="metric-icon" style={{ background: 'rgba(245, 158, 11, 0.1)', color: '#f59e0b' }}>
-              <BatteryWarning size={48} />
-            </div>
-            <div className="metric-info">
-              <span className="metric-label">Time on Battery</span>
-              <div className="metric-value">
-                {formatDuration(timeOnBatteryMins)}
-              </div>
-            </div>
-          </div>
-
           <div className="metric-card glass-panel">
             <div className="metric-icon" style={{ background: 'rgba(16, 185, 129, 0.1)', color: '#10b981' }}>
               <BatteryCharging size={48} />
