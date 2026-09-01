@@ -5,6 +5,18 @@ import { format, addDays, subDays, isSameDay } from 'date-fns';
 import { fetchFromBackend } from '../utils/api';
 import './Battery.css';
 
+// Only pack 1 of the bank is wired to the RS485 bus, so the BMS `capacity_ah`
+// is one pack's rating rather than the whole bank's. The second pack is in
+// parallel on the DC side but has no data link, so it has to be counted here.
+const BATTERY_PACK_COUNT = 2;
+// 16S LiFePO4 nominal. Deliberately not the live pack voltage: that swings
+// between the 46 V cut-off and the 57.6 V bulk setpoint, which would move the
+// available-energy figure by ~20% at an unchanged state of charge.
+const NOMINAL_PACK_VOLTAGE = 51.2;
+// Used only when the BMS reports no capacity at all -- disconnected, or a frame
+// that failed the range checks. One 16 kWh pack.
+const FALLBACK_PACK_AH = 312.5;
+
 export default function Battery() {
   const [data, setData] = useState({
     soc: 0,
@@ -12,6 +24,7 @@ export default function Battery() {
     current: 0.0,
     power: 0.0,
     temperature: 0.0,
+    capacity_ah: 0.0,
     state: "Loading...",
     status: "Connecting..."
   });
@@ -89,6 +102,14 @@ export default function Battery() {
   // Calculate History Metrics directly from Knox BMS RS485
   const totalChargeKwh = bmsTotals?.bms_charge_kwh ?? (data?.bms_charge_kwh ?? 0);
   const totalDischargeKwh = bmsTotals?.bms_discharge_kwh ?? (data?.bms_discharge_kwh ?? 0);
+  // Bank energy comes from the BMS capacity register rather than a fixed
+  // constant, so replacing the packs does not need a code change -- only
+  // BATTERY_PACK_COUNT does, and only for as long as pack 2 stays off the bus.
+  const bankCapacityKwh = useMemo(() => {
+    const packAh = data.capacity_ah > 0 ? data.capacity_ah : FALLBACK_PACK_AH;
+    return (packAh * NOMINAL_PACK_VOLTAGE * BATTERY_PACK_COUNT) / 1000;
+  }, [data.capacity_ah]);
+  const availableKwh = (data.soc / 100) * bankCapacityKwh;
   // "Time on battery" = minutes with no solar, no grid import, and the battery
   // discharging. /api/history returns kW under solar / gridImport /
   // batteryDischarge; this previously read solar_w / grid_w / battery_w, which
@@ -196,7 +217,7 @@ export default function Battery() {
               </div>
               <div className="soc-footer-mobile">
                 <span>{data.state}</span>
-                <span>{((data.soc / 100) * 10.24).toFixed(2)} kWh Avail</span>
+                <span>{availableKwh.toFixed(2)} kWh Avail</span>
               </div>
             </div>
 
@@ -211,7 +232,7 @@ export default function Battery() {
                 <span className="detail-label">Available Energy</span>
                 <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px' }}>
                   <span className="detail-value">
-                    {((data.soc / 100) * 10.24).toFixed(2)}
+                    {availableKwh.toFixed(2)}
                   </span>
                   <span className="detail-unit">kWh</span>
                 </div>
