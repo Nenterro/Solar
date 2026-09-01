@@ -42,6 +42,29 @@ def require_token(x_solar_token: Optional[str] = Header(default=None)):
         raise HTTPException(status_code=401, detail="Missing or invalid X-Solar-Token")
 
 
+def battery_power_w_from_inverters(readings: Optional[Dict[str, Any]] = None) -> Optional[float]:
+    """
+    Real battery power in watts, summed across the inverters.
+
+    The Knox BMS reports voltage, SOC and rated capacity but not current, so
+    this is the only true measurement of battery current available. It is also
+    the more complete one: the inverters see the whole bank, while the RS485 bus
+    reaches only the pack wired to it. Positive is charging, negative is
+    discharging. Returns None when no inverter reading is available, so callers
+    can tell "no data" apart from a genuine zero.
+    """
+    try:
+        if readings is None:
+            readings = serial_reader_instance.readings_cache
+        if not readings:
+            return None
+        return round(sum(float(r.get("battery_power_kw", 0.0) or 0.0)
+                         for r in readings.values()) * 1000.0, 2)
+    except Exception as e:
+        logger.error(f"Error deriving battery power from inverters: {e}")
+        return None
+
+
 # --- Inverter command allow-list ----------------------------------------------
 #
 # Commands were previously passed through to the serial port verbatim, so any
@@ -175,12 +198,14 @@ def background_telemetry_loop():
                 bms_data = bms.get_latest_data()
                 bms_soc = float(bms_data.get("soc", 0.0))
                 bms_v = float(bms_data.get("voltage", 0.0))
-                bms_power_w = float(bms_data.get("power", 0.0))
-                if bms_data.get("state") == "Discharging":
-                    bms_power_w = -abs(bms_power_w)
-
                 # Capture RS232 telemetry snapshot from local USB inverters
                 readings = serial_reader_instance.poll_all_inverters()
+
+                # The BMS has no current register, so battery power is taken
+                # from the inverters. Computed from the snapshot just polled so
+                # the stored power matches the stored sample, and already
+                # signed: positive charging, negative discharging.
+                bms_power_w = battery_power_w_from_inverters(readings) or 0.0
 
                 if readings:
                     for inv_id in readings:
@@ -293,15 +318,22 @@ def get_battery(date: Optional[str] = Query(None)):
     """
     data = bms.get_latest_data()
 
-    # Calculate BMS battery power directly: P_bms = V_bms * I_bms
+    # Voltage and SOC come from the BMS; current and power cannot, because this
+    # BMS does not report current at all (see battery_bms.py). Derive them from
+    # the inverters and back out the current from the measured pack voltage.
     bms_v = float(data.get("voltage", 0.0))
-    bms_i = float(data.get("current", 0.0))
-    bms_power = round(bms_v * bms_i, 2)
-    data["power"] = bms_power
+    power_w = battery_power_w_from_inverters()
+    if power_w is None:
+        power_w = 0.0
+        data["power_source"] = "unavailable"
+    else:
+        data["power_source"] = "inverters"
+    data["power"] = round(power_w, 2)
+    data["current"] = round(power_w / bms_v, 2) if bms_v > 0 else 0.0
 
-    if bms_i > 0.5:
+    if data["current"] > 0.5:
         data["state"] = "Charging"
-    elif bms_i < -0.5:
+    elif data["current"] < -0.5:
         data["state"] = "Discharging"
     else:
         data["state"] = "Idle"

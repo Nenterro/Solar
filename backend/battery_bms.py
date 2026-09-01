@@ -39,6 +39,15 @@ class BatteryBMS:
         self.latest_data = {
             "soc": 0,
             "voltage": 0.0,
+            # The Knox BMS does not report current. It serves exactly one fixed
+            # 10-register frame (it ignores both the start address and the
+            # quantity, and rejects function 0x04 with an illegal-function
+            # exception), and the only non-zero fields in it are voltage, SOC
+            # and rated capacity. The register previously read as current sits
+            # at a constant 1 -- measured at 0.1 A while the bank was actually
+            # discharging at 76 A. server.py fills these from the inverters,
+            # which measure real battery current and cover both packs rather
+            # than only the one wired to the RS485 bus.
             "current": 0.0,
             "power": 0.0,
             "temperature": 0.0,
@@ -135,8 +144,6 @@ class BatteryBMS:
                                     soc_raw = struct.unpack('>H', res[6:8])[0]
                                     capacity_raw = struct.unpack('>I', res[8:12])[0]
                                     capacity_ah = capacity_raw / 1000.0
-                                    current_raw = struct.unpack('>h', res[12:14])[0]
-                                    current = current_raw / 10.0
 
                                     if soc_raw > 100 or soc_raw < 0 or voltage > 70.0 or voltage < 35.0:
                                         time.sleep(0.15)
@@ -149,23 +156,13 @@ class BatteryBMS:
                                             time.sleep(0.15)
                                             continue
 
-                                    power = voltage * current
                                     self.latest_data["soc"] = int(soc_raw)
                                     self.latest_data["voltage"] = voltage
                                     self.latest_data["capacity_ah"] = capacity_ah
-                                    self.latest_data["current"] = current
-                                    self.latest_data["power"] = round(power, 2)
 
                                     self.last_valid_soc = int(soc_raw)
                                     self.last_soc_time = now_t
                                     self.last_valid_voltage = voltage
-
-                                    if current > 0.5:
-                                        self.latest_data["state"] = "Charging"
-                                    elif current < -0.5:
-                                        self.latest_data["state"] = "Discharging"
-                                    else:
-                                        self.latest_data["state"] = "Idle"
 
                                     self.latest_data["status"] = "Connected"
                                     self.latest_data["last_updated"] = time.time()

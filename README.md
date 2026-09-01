@@ -98,7 +98,14 @@ Authenticated writes (POST/PUT/DELETE only — none of these are reachable by GE
   valid CRC or the same value twice, because six commands share one open port and
   a late reply would otherwise be read as the answer to the next command.
 - Battery SOC and voltage always come from the Knox BMS over RS485, never from
-  the inverter's own reading.
+  the inverter's own reading. Battery **current and power are the opposite** —
+  they come from the inverters, because the BMS does not report current. It
+  serves one fixed 10-register frame (ignoring both the start address and the
+  quantity, and rejecting function 0x04), whose only populated fields are
+  voltage, SOC and rated capacity; the register once read as current holds a
+  constant 1, measured at 0.1 A while the bank was discharging at 76 A. The
+  inverters also see the whole bank, whereas RS485 reaches only the pack wired
+  to it.
 - The Knox BMS reports a register count where Modbus expects a byte count, so
   replies are validated by header and length plus value-range checks.
 
