@@ -41,3 +41,11 @@ backend/dess_credentials.json
 
 # Local database backups written by the telemetry de-duplication migration
 *.db.bak-*
+
+# Backend. The telemetry service lives solely on the home server, in
+# ~/Docker/solar-new/backend, and deploys by editing there and restarting the
+# container. This repo is what Vercel builds, and Vercel only serves the
+# frontend - tracking the backend here gave one service two copies with
+# nothing keeping them in step.
+/backend/
+CLAUDE.local.md
