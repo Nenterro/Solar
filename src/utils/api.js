@@ -3,20 +3,17 @@
  *
  * Tries candidate backend URLs in priority order:
  *   1. Custom URL from localStorage ("solar_custom_backend_url")
- *   2. DuckDNS  (https://huz-solar.duckdns.org:8888)
- *   3. LAN      (http://192.168.18.49:8000)
- *
- * Note: when the dashboard itself is served over HTTPS, the browser blocks the
- * plain-http LAN candidate as mixed content, so that fallback only works when
- * the app is opened over http on the local network.
+ *   2. Cloudflare Tunnel (https://solar-api.huzaifa.page) - works on either
+ *      of the home server's internet lines
+ *   3. DuckDNS  (https://huz-solar.duckdns.org:8888) - primary line only
  *
  * Caches the last-working URL for the session to avoid redundant probing, and
  * attaches the API token (if one is configured) to every request.
  */
 
 const DEFAULT_URLS = [
-  'https://huz-solar.duckdns.org:8888',
-  'http://192.168.18.49:8000'
+  'https://solar-api.huzaifa.page',
+  'https://huz-solar.duckdns.org:8888'
 ];
 
 let cachedWorkingUrl = null;

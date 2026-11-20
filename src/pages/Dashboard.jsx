@@ -7,8 +7,8 @@ import { useTelemetry } from '../context/TelemetryContext';
 import './Dashboard.css';
 
 export const CANDIDATE_BACKEND_URLS = [
-  'https://huz-solar.duckdns.org:8888',
-  'http://192.168.18.49:8000'
+  'https://solar-api.huzaifa.page',
+  'https://huz-solar.duckdns.org:8888'
 ].filter(Boolean);
 
 export default function Dashboard() {
