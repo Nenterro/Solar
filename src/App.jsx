@@ -7,6 +7,7 @@ import Graphs from './pages/Graphs';
 import Data from './pages/Data';
 import InverterSettings from './pages/InverterSettings';
 import Automations from './pages/Automations';
+import Notifications from './pages/Notifications';
 import { TelemetryProvider } from './context/TelemetryContext';
 
 export default function App() {
@@ -22,6 +23,7 @@ export default function App() {
             <Route path="data" element={<Data />} />
             <Route path="inverter-settings" element={<InverterSettings />} />
             <Route path="automations" element={<Automations />} />
+            <Route path="notifications" element={<Notifications />} />
           </Route>
         </Routes>
       </BrowserRouter>

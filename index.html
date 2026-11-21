@@ -3,8 +3,21 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>solar-new</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+
+    <!-- Installable web app -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <meta name="theme-color" content="#09090b" />
+    <meta name="description" content="Live power, battery and history for the home solar system." />
+
+    <!-- iOS reads its own tags rather than the manifest. -->
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Solar" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+
+    <title>Solar</title>
   </head>
   <body>
     <div id="root"></div>

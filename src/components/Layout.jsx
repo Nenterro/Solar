@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Outlet, NavLink, useLocation } from 'react-router-dom';
-import { LayoutDashboard, Sliders, LineChart, Database, Settings, Sun, Pin, PinOff, Battery, Power, MoreHorizontal, Clock } from 'lucide-react';
+import { LayoutDashboard, Sliders, LineChart, Database, Settings, Sun, Pin, PinOff, Battery, Power, MoreHorizontal, Clock, Bell } from 'lucide-react';
 import { useTelemetry } from '../context/TelemetryContext';
 import './Layout.css';
 
@@ -12,6 +12,7 @@ const MAIN_NAV_ITEMS = [
   { path: '/data', label: 'Data', icon: Database },
   { path: '/inverter-settings', label: 'Inverter Controls', icon: Sliders },
   { path: '/automations', label: 'Automations', icon: Clock },
+  { path: '/notifications', label: 'Notifications', icon: Bell },
 ];
 
 // Mobile Nav Structure
@@ -26,6 +27,7 @@ const MOBILE_MORE_ITEMS = [
   { path: '/inverter-settings', label: 'Inverter Controls', icon: Sliders },
   { path: '/automations', label: 'Automations', icon: Clock },
   { path: '/data', label: 'Data', icon: Database },
+  { path: '/notifications', label: 'Notifications', icon: Bell },
 ];
 
 function Sidebar({ isPinned, togglePin, isBackendOnline }) {
