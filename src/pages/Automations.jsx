@@ -192,6 +192,8 @@ const RESCUE_FIELDS = [
   { key: 'target_soc', label: 'Stop at', unit: '%' },
   { key: 'max_hours', label: 'Longest rescue', unit: 'h' },
   { key: 'cooldown_hours', label: 'Cooldown', unit: 'h' },
+  { key: 'max_forecast_error_pct', label: 'Max forecast error', unit: '%' },
+  { key: 'decide_by_hour', label: 'Decide by (hour)', unit: ':00' },
 ];
 
 function RescueCard({ rescue, onChanged, showToast }) {
@@ -251,8 +253,10 @@ function RescueCard({ rescue, onChanged, showToast }) {
         {now.soc != null && <span className="ctrl-soc"> · battery {Math.round(now.soc)}%</span>}
       </div>
       <p className="ctrl-sub">
-        After a deep discharge, switches every inverter to <b>Solar and Utility</b> so the grid tops the battery up,
-        unless the forecast says the sun will do it in time, then puts the previous charging setting back.
+        After a deep discharge, switches every inverter to <b>Solar and Utility</b> so the grid tops the battery up
+        to the stop level, then puts the previous charging setting back. It waits for the sun instead if even the
+        low end of the forecast covers that same refill (to the stop level, not a full battery), and while the
+        forecast is less certain than the max error it waits for the day to firm it up, deciding by the set hour.
       </p>
       {active && st.since && (
         <p className="ctrl-sub">Started {st.since.slice(11, 16)} at {Math.round(st.start_soc)}% · {now.reason}</p>
@@ -293,6 +297,7 @@ function RescueCard({ rescue, onChanged, showToast }) {
             onClick={() => save({
               trigger_soc: Number(form.trigger_soc), target_soc: Number(form.target_soc),
               max_hours: Number(form.max_hours), cooldown_hours: Number(form.cooldown_hours),
+              max_forecast_error_pct: Number(form.max_forecast_error_pct), decide_by_hour: Number(form.decide_by_hour),
               use_forecast: !!form.use_forecast, allow_during_peak: !!form.allow_during_peak,
             }, 'Rescue settings saved')}>
             <Check size={16} /><span>Save settings</span>
