@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { PiggyBank, TriangleAlert, CircleCheck } from 'lucide-react';
 import {
   ResponsiveContainer, LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ReferenceLine,
@@ -58,6 +58,109 @@ function buildRows(report) {
   let prev = add('net_billing', 'all_night', basePacks, null);
   for (let n = basePacks + 1; n <= basePacks + s.max_extra_packs; n++) prev = add('net_billing', 'all_night', n, prev);
   return rows;
+}
+
+function Progress({ prog, report }) {
+  const s = report.settings;
+  const cur = report.results.find((r) => r.strategy === 'peak_only' && near(r.battery_kwh, s.current_battery_kwh));
+  const simYear = cur?.saving_vs_none?.net_metering_pkr;
+  // Where the year-round simulation says the bank should be by now, for comparison.
+  const simSoFar = simYear != null ? (simYear * prog.days_elapsed) / 365 : null;
+  const pct = (v) => Math.max(0, Math.min(100, (100 * v) / prog.cost_pkr));
+  const gross = Math.max(prog.peak_saving_pkr, 1);
+  const e = prog.energy;
+  const roundTrip = e.charge_kwh ? Math.round((100 * (e.peak_discharge_kwh + e.offpeak_discharge_kwh)) / e.charge_kwh) : null;
+  return (
+    <section className="fc-card glass-panel">
+      <div className="fc-card-head">
+        <h3>Your {prog.packs} packs: payback so far</h3>
+        <span className="fc-muted">Measured since {prog.since} ({prog.days_elapsed} days) · net metering</span>
+      </div>
+
+      <div className="pb-headline">
+        <span className="pb-big" style={{ color: SERIES.actual }}>{rs(prog.saved_pkr)}</span>
+        <span className="fc-muted">saved of {rs(prog.cost_pkr)} ({prog.progress_pct}%)</span>
+      </div>
+      <div className="pb-bar" role="img" aria-label={`${prog.progress_pct}% of the battery cost recovered`}>
+        <div className="pb-fill" style={{ width: `${pct(prog.saved_pkr)}%`, background: SERIES.actual }} />
+        {simSoFar != null && (
+          <div className="pb-marker" style={{ left: `${pct(simSoFar)}%` }} title={`Simulation: ${rs(simSoFar)} expected by now`} />
+        )}
+      </div>
+      <div className="pb-scale">
+        <span>Rs 0</span>
+        {simSoFar != null && <span className="fc-muted">marker: {rs(simSoFar)}, what the simulation expected by now</span>}
+        <span>{rs(prog.cost_pkr)}</span>
+      </div>
+
+      <div className="pb-split">
+        <div className="pb-row">
+          <div className="pb-row-head">
+            <span>Peak hours</span>
+            <b className="tone-good">+{rs(prog.peak_saving_pkr)}</b>
+          </div>
+          <div className="pb-mini"><div style={{ width: '100%', background: SERIES.expected }} /></div>
+          <div className="fc-muted">
+            {e.peak_discharge_kwh.toLocaleString()} kWh from the battery in peak hours: grid imports at the peak rate avoided
+          </div>
+        </div>
+        <div className="pb-row">
+          <div className="pb-row-head">
+            <span>Off-peak hours</span>
+            <b className={prog.offpeak_saving_pkr < 0 ? 'tone-bad' : 'tone-good'}>
+              {prog.offpeak_saving_pkr < 0 ? '' : '+'}{rs(prog.offpeak_saving_pkr)}
+            </b>
+          </div>
+          <div className="pb-mini">
+            <div style={{ width: `${Math.min(100, (100 * Math.abs(prog.offpeak_saving_pkr)) / gross)}%`, background: SERIES.third }} />
+          </div>
+          <div className="fc-muted">
+            {e.charge_kwh.toLocaleString()} kWh of solar stored instead of exported (export credit given up),
+            less {e.offpeak_discharge_kwh.toLocaleString()} kWh discharged off-peak
+          </div>
+        </div>
+      </div>
+
+      <div className="fc-table-wrap">
+        <table className="fc-table">
+          <thead>
+            <tr>
+              <th>Month</th><th>From battery, peak</th><th>Stored from solar</th><th>Peak saving</th>
+              <th>Off-peak</th><th>Net saving</th><th>If net billing</th>
+            </tr>
+          </thead>
+          <tbody>
+            {prog.monthly.map((m) => (
+              <tr key={m.month}>
+                <td>{m.month}</td>
+                <td>{m.peak_discharge_kwh} kWh</td>
+                <td>{m.charge_kwh} kWh</td>
+                <td>{rs(m.peak_saving_pkr)}</td>
+                <td>{rs(m.offpeak_saving_pkr)}</td>
+                <td><b>{rs(m.saving_pkr)}</b></td>
+                <td className="fc-muted">{rs(m.net_billing_saving_pkr)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="fc-stats pb-proj">
+        <div><span>At the rate so far</span><b>{rs(prog.per_year_at_recent_rate_pkr)} / yr</b></div>
+        <div><span>Payback at that rate</span><b>{yrs(prog.payback_years_at_recent_rate)}</b></div>
+        <div><span>Simulated full year</span><b>{rs(simYear)} / yr</b></div>
+        <div><span>Payback, simulated</span><b>{yrs(simYear > 0 ? prog.cost_pkr / simYear : null)}</b></div>
+        <div><span>Round trip, measured</span><b>{roundTrip != null ? `${roundTrip}%` : '-'}</b></div>
+        <div><span>Same hours, net billing</span><b>{rs(prog.net_billing_saving_pkr)}</b></div>
+      </div>
+      <p className="fc-note">
+        Each month is billed twice from the measured hours: as it happened, and with the battery's charge and discharge
+        removed. Under net metering, stored solar is solar not exported, so charging costs the excess-export credit
+        (Rs {s.net_metering_excess_rate}/unit). If your excess exports earn less, or roll forward as units, the battery is
+        doing better than shown. So far this covers autumn; summer evenings are heavier, which the simulated full year includes.
+      </p>
+    </section>
+  );
 }
 
 function CurveTooltip({ active, payload, label, unit }) {
@@ -143,13 +246,20 @@ function SettingsForm({ settings, onSaved }) {
 
 export default function Payback() {
   const [report, setReport] = useState(null);
+  const [prog, setProg] = useState(null);
+  // A late failure (a retry, or React's double effect in development) must not
+  // hide a report that has already arrived.
+  const loaded = useRef(false);
   const [error, setError] = useState(null);
   const [scheme, setScheme] = useState('net_billing');
 
   const load = useCallback(() => {
     fetchFromBackend('/api/forecast/battery', SLOW)
-      .then((r) => { setReport(r); setError(null); })
-      .catch(() => setError('Could not load the battery simulation. It takes a few seconds the first time.'));
+      .then((r) => { loaded.current = true; setReport(r); setError(null); })
+      .catch(() => {
+        if (!loaded.current) setError('Could not load the battery simulation. It takes a few seconds the first time.');
+      });
+    fetchFromBackend('/api/forecast/battery/progress', SLOW).then(setProg).catch(() => {});
   }, []);
   useEffect(() => { load(); }, [load]);
 
@@ -229,6 +339,8 @@ export default function Payback() {
               </div>
             </div>
           </div>
+
+          {prog && <Progress prog={prog} report={report} />}
 
           <section className="fc-card glass-panel">
             <div className="fc-card-head">
