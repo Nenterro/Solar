@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Outlet, NavLink, useLocation } from 'react-router-dom';
-import { LayoutDashboard, Sliders, LineChart, Database, Settings, Sun, Pin, PinOff, Battery, Power, MoreHorizontal, Clock, Bell } from 'lucide-react';
+import { LayoutDashboard, Sliders, LineChart, Database, Settings, Sun, Pin, PinOff, Battery, Power, MoreHorizontal, Clock, Bell, CloudSun, PiggyBank } from 'lucide-react';
 import { useTelemetry } from '../context/TelemetryContext';
 import './Layout.css';
 
@@ -10,6 +10,8 @@ const MAIN_NAV_ITEMS = [
   { path: '/grid', label: 'Grid', icon: Power },
   { path: '/graphs', label: 'Graphs', icon: LineChart },
   { path: '/data', label: 'Data', icon: Database },
+  { path: '/forecast', label: 'Forecast', icon: CloudSun },
+  { path: '/payback', label: 'Battery Payback', icon: PiggyBank },
   { path: '/inverter-settings', label: 'Inverter Controls', icon: Sliders },
   { path: '/automations', label: 'Automations', icon: Clock },
   { path: '/notifications', label: 'Notifications', icon: Bell },
@@ -24,6 +26,8 @@ const MOBILE_MAIN_ITEMS = [
 ];
 
 const MOBILE_MORE_ITEMS = [
+  { path: '/forecast', label: 'Forecast', icon: CloudSun },
+  { path: '/payback', label: 'Battery Payback', icon: PiggyBank },
   { path: '/inverter-settings', label: 'Inverter Controls', icon: Sliders },
   { path: '/automations', label: 'Automations', icon: Clock },
   { path: '/data', label: 'Data', icon: Database },

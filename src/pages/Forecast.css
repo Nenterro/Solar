@@ -1,0 +1,268 @@
+/* Forecast and Battery Payback pages. */
+
+.fc-page {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 10px;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  overflow-x: hidden;
+}
+
+.fc-muted { color: var(--text-muted); font-size: 0.8rem; }
+
+.fc-error {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 18px;
+  color: #fca5a5;
+}
+
+/* --- Tiles --------------------------------------------------------------- */
+.fc-tiles {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.fc-tile { padding: 18px 20px; min-width: 0; }
+.fc-tile-label {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-secondary);
+  margin-bottom: 8px;
+}
+.fc-tile-value { font-size: 1.6rem; font-weight: 700; color: var(--text-primary); line-height: 1.15; }
+.fc-tile-sub { margin-top: 6px; font-size: 0.8rem; color: var(--text-secondary); line-height: 1.4; }
+
+/* --- Cards ----------------------------------------------------------------- */
+.fc-card { padding: 20px 22px; min-width: 0; }
+.fc-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin-bottom: 12px;
+}
+.fc-card-head h3 { font-size: 1.05rem; font-weight: 600; color: var(--text-primary); }
+.fc-subhead { font-size: 0.85rem; font-weight: 600; color: var(--text-secondary); margin: 16px 0 8px; }
+.fc-chart { width: 100%; }
+.fc-loading {
+  height: 100%;
+  min-height: 120px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+.fc-note {
+  margin-top: 10px;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.fc-two { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
+
+/* --- Segmented control ----------------------------------------------------- */
+.fc-seg {
+  display: inline-flex;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  padding: 3px;
+}
+.fc-seg button {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 0.8rem;
+  padding: 6px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.fc-seg button.active { background: rgba(255, 255, 255, 0.1); color: var(--text-primary); }
+
+/* --- Tooltip --------------------------------------------------------------- */
+.fc-tooltip {
+  background: #1e1e28;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 0.8rem;
+  color: var(--text-primary);
+  max-width: 300px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+.fc-tooltip-title { font-weight: 600; margin-bottom: 6px; }
+.fc-tooltip-row { display: flex; align-items: center; gap: 6px; margin: 2px 0; }
+.fc-tooltip-row b { margin-left: auto; padding-left: 12px; }
+.fc-tooltip-muted { color: var(--text-secondary); margin: 2px 0; }
+.fc-tooltip-verdict { margin-top: 6px; font-weight: 600; }
+.fc-tooltip-reason { color: var(--text-secondary); margin-top: 2px; line-height: 1.35; }
+.fc-swatch { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
+
+/* --- Status tones (always paired with an icon or a label) ------------------ */
+.tone-good { color: #34d399; }
+.tone-warn { color: #fbbf24; }
+.tone-bad { color: #f87171; }
+.tone-info { color: #93c5fd; }
+.tone-good, .tone-warn, .tone-bad, .tone-info { display: inline-flex; align-items: center; gap: 4px; }
+
+/* --- Stats strip ----------------------------------------------------------- */
+.fc-stats {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+.fc-stats div { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.fc-stats span { font-size: 0.72rem; color: var(--text-muted); }
+.fc-stats b { font-size: 1rem; color: var(--text-primary); }
+
+/* --- Flagged days ---------------------------------------------------------- */
+.fc-flags {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+  max-height: 420px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+.fc-flag {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 12px;
+  padding: 12px 14px;
+}
+.fc-flag-top { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px; }
+.fc-flag-date { font-weight: 600; font-size: 0.9rem; }
+.fc-flag-nums { font-size: 0.82rem; color: var(--text-secondary); margin-bottom: 4px; }
+.fc-flag-nums .fc-muted { display: inline-flex; align-items: center; gap: 3px; }
+.fc-flag-reason { font-size: 0.78rem; color: var(--text-muted); line-height: 1.4; margin-top: 3px; }
+.fc-pill {
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
+  white-space: nowrap;
+}
+
+/* --- Tables ---------------------------------------------------------------- */
+.fc-table-wrap { overflow-x: auto; }
+.fc-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+.fc-table th {
+  text-align: right;
+  font-weight: 600;
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+  padding: 8px 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  white-space: nowrap;
+}
+.fc-table td {
+  text-align: right;
+  padding: 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+.fc-table th:first-child, .fc-table td:first-child { text-align: left; }
+.fc-table .sep { border-left: 1px solid rgba(255, 255, 255, 0.08); }
+.fc-payback th:nth-child(3), .fc-payback td:nth-child(3) { text-align: left; }
+.fc-payback th { white-space: normal; vertical-align: bottom; line-height: 1.3; padding: 8px 7px; }
+.fc-payback td { padding: 9px 7px; }
+.fc-payback tr.nm td { background: rgba(255, 255, 255, 0.03); border-bottom: 1px solid rgba(255, 255, 255, 0.18); }
+
+.cell-good { background: rgba(16, 185, 129, 0.16) !important; }
+.cell-warn { background: rgba(245, 158, 11, 0.18) !important; }
+.cell-bad { background: rgba(239, 68, 68, 0.16) !important; }
+
+.fc-legend { display: flex; flex-wrap: wrap; gap: 8px 20px; margin-top: 12px; font-size: 0.78rem; color: var(--text-secondary); }
+.fc-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.fc-legend i { width: 14px; height: 14px; border-radius: 3px; display: inline-block; }
+.fc-legend i.cell-good { background: rgba(16, 185, 129, 0.55) !important; }
+.fc-legend i.cell-warn { background: rgba(245, 158, 11, 0.55) !important; }
+.fc-legend i.cell-bad { background: rgba(239, 68, 68, 0.55) !important; }
+
+/* --- Panel health ---------------------------------------------------------- */
+.fc-health { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.fc-health div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 0.8rem;
+}
+.fc-health span:first-child { color: var(--text-secondary); }
+
+/* --- Month borrowing strip ------------------------------------------------- */
+.fc-months-note { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.fc-months-note span { font-size: 0.72rem; padding: 3px 8px; border-radius: 6px; }
+.fc-months-note .measured { background: rgba(16, 185, 129, 0.14); color: #a7f3d0; }
+.fc-months-note .borrowed { background: rgba(255, 255, 255, 0.05); color: var(--text-muted); }
+
+/* --- Settings form --------------------------------------------------------- */
+.fc-fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
+.fc-months { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 8px; }
+.fc-field { display: flex; flex-direction: column; gap: 4px; font-size: 0.78rem; color: var(--text-secondary); }
+.fc-field small { color: var(--text-muted); font-size: 0.7rem; }
+.fc-field input {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  color: var(--text-primary);
+  padding: 8px 10px;
+  font: inherit;
+  font-size: 0.85rem;
+  width: 100%;
+  box-sizing: border-box;
+}
+.fc-field.small input { padding: 6px; text-align: center; }
+.fc-actions { display: flex; align-items: center; gap: 14px; margin-top: 16px; flex-wrap: wrap; font-size: 0.82rem; }
+.fc-btn {
+  background: var(--accent-gradient);
+  border: none;
+  color: #111;
+  font: inherit;
+  font-weight: 600;
+  font-size: 0.85rem;
+  padding: 9px 16px;
+  border-radius: 10px;
+  cursor: pointer;
+}
+.fc-btn:disabled { opacity: 0.6; cursor: default; }
+
+/* --- Responsive ------------------------------------------------------------ */
+@media (max-width: 1100px) {
+  .fc-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .fc-two { grid-template-columns: minmax(0, 1fr); }
+  .fc-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+
+@media (max-width: 600px) {
+  .fc-page { padding: 4px; gap: 14px; }
+  .fc-tiles { gap: 10px; }
+  .fc-tile { padding: 14px; }
+  .fc-tile-value { font-size: 1.25rem; }
+  .fc-card { padding: 16px 14px; }
+  .fc-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .fc-health { grid-template-columns: minmax(0, 1fr); }
+  .fc-months { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+}

@@ -8,6 +8,8 @@ import Data from './pages/Data';
 import InverterSettings from './pages/InverterSettings';
 import Automations from './pages/Automations';
 import Notifications from './pages/Notifications';
+import Forecast from './pages/Forecast';
+import Payback from './pages/Payback';
 import { TelemetryProvider } from './context/TelemetryContext';
 
 export default function App() {
@@ -24,6 +26,8 @@ export default function App() {
             <Route path="inverter-settings" element={<InverterSettings />} />
             <Route path="automations" element={<Automations />} />
             <Route path="notifications" element={<Notifications />} />
+            <Route path="forecast" element={<Forecast />} />
+            <Route path="payback" element={<Payback />} />
           </Route>
         </Routes>
       </BrowserRouter>
