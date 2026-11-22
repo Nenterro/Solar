@@ -948,3 +948,43 @@
   border-top: 1px solid rgba(255, 255, 255, 0.08);
   padding-top: 14px;
 }
+
+
+/* --- Peak hours and battery rescue cards ------------------------------------ */
+.ctrl-cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-bottom: 20px; }
+.ctrl-card { padding: 18px 20px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.ctrl-card.rescue-active { border-color: rgba(245, 158, 11, 0.45); }
+.ctrl-card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.ctrl-title { display: flex; align-items: center; gap: 8px; font-weight: 600; color: var(--text-primary); }
+.ctrl-title svg { color: var(--accent-color); }
+.ctrl-big { font-size: 1.35rem; font-weight: 700; color: var(--text-primary); }
+.ctrl-soc { font-size: 0.95rem; font-weight: 500; color: var(--text-secondary); }
+.ctrl-sub { font-size: 0.8rem; color: var(--text-secondary); line-height: 1.45; margin: 0; }
+.ctrl-badge { font-size: 0.72rem; font-weight: 600; padding: 3px 9px; border-radius: 999px; }
+.ctrl-badge.live { background: rgba(245, 158, 11, 0.18); color: #fbbf24; }
+.ctrl-link { align-self: flex-start; background: none; border: none; color: var(--accent-color); font: inherit; font-size: 0.82rem; cursor: pointer; padding: 0; }
+.ctrl-actions { display: flex; gap: 10px; justify-content: flex-end; flex-wrap: wrap; margin-top: 4px; }
+.peak-months { display: flex; flex-wrap: wrap; gap: 6px; }
+.peak-months span { font-size: 0.72rem; padding: 3px 8px; border-radius: 6px; background: rgba(255, 255, 255, 0.05); color: var(--text-secondary); }
+.peak-months span.current { background: rgba(245, 158, 11, 0.18); color: #fbbf24; }
+.peak-edit { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 8px; }
+.peak-edit label, .rescue-fields label { display: flex; flex-direction: column; gap: 4px; font-size: 0.72rem; color: var(--text-secondary); }
+.peak-edit input, .rescue-fields input {
+  width: 100%; box-sizing: border-box; background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px; color: var(--text-primary); padding: 6px 8px; font: inherit; font-size: 0.85rem;
+}
+.rescue-fields { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-top: 4px; }
+.rescue-fields label div { display: flex; align-items: center; gap: 6px; color: var(--text-muted); }
+.rescue-check-opt { display: flex; align-items: center; gap: 8px; font-size: 0.8rem; color: var(--text-secondary); cursor: pointer; }
+.rescue-checks { list-style: none; padding: 0; margin: 2px 0; display: flex; flex-direction: column; gap: 4px; font-size: 0.78rem; }
+.rescue-checks li { display: flex; align-items: flex-start; gap: 6px; line-height: 1.35; }
+.rescue-checks li svg { flex-shrink: 0; margin-top: 1px; }
+.rescue-checks li.ok { color: #6ee7b7; }
+.rescue-checks li.no { color: var(--text-muted); }
+.peak-hint { font-size: 0.78rem; color: var(--text-secondary); margin: -6px 0 4px; }
+
+@media (max-width: 900px) {
+  .ctrl-cards { grid-template-columns: minmax(0, 1fr); }
+  .rescue-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .peak-edit { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}

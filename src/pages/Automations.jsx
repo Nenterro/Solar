@@ -19,7 +19,10 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
-  Check
+  Check,
+  Sunset,
+  LifeBuoy,
+  XCircle
 } from 'lucide-react';
 import { fetchFromBackend } from '../utils/api';
 import UnifiedGlassDropdown from '../components/UnifiedGlassDropdown';
@@ -43,7 +46,7 @@ const AVAILABLE_SETTING_TYPES = [
   ]},
   { id: 'back_to_grid', label: 'Back to Grid Voltage', icon: ShieldAlert, type: 'number', prefix: 'PBCV', defaultVal: '52.0', unit: 'V' },
   { id: 'back_to_discharge', label: 'Back to Discharge Voltage', icon: ShieldAlert, type: 'number', prefix: 'PBDV', defaultVal: '54.0', unit: 'V' },
-  { id: 'cut_off_v', label: 'Low Battery Cut-Off Voltage', icon: ShieldAlert, type: 'number', prefix: 'PSDV', defaultVal: '46.0', unit: 'V' },
+  { id: 'cut_off_v', label: 'Low Battery Cut-Off Voltage', icon: ShieldAlert, type: 'number', prefix: 'PSDV', defaultVal: '48.0', unit: 'V' },
 ];
 
 // Helper: Convert 24h string "18:30" to 12h formatted string "06:30 PM"
@@ -64,6 +67,240 @@ function convertTo24h(h12, m, period) {
   if (period === 'PM' && h < 12) h += 12;
   if (period === 'AM' && h === 12) h = 0;
   return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`;
+}
+
+// Automation times are "HH:MM", or relative to IESCO peak hours: "peak_start",
+// "peak_end", optionally with a minute offset ("peak_start-5", "peak_end+10").
+// The server resolves them against each day's window, so they follow the
+// seasonal changes on their own.
+const PEAK_RE = /^(peak_start|peak_end)(?:([+-])(\d{1,3}))?$/;
+
+function parseScheduleTime(t) {
+  const m = PEAK_RE.exec(t || '');
+  if (!m) return { mode: 'fixed', offset: 0 };
+  return { mode: m[1], offset: (m[2] === '-' ? -1 : 1) * Number(m[3] || 0) };
+}
+
+function buildScheduleTime(mode, offset, fixed) {
+  if (mode === 'fixed') return fixed;
+  const o = Math.round(Number(offset) || 0);
+  return o === 0 ? mode : `${mode}${o > 0 ? '+' : '-'}${Math.abs(o)}`;
+}
+
+function resolvePeakTime(t, peak) {
+  const { mode, offset } = parseScheduleTime(t);
+  if (mode === 'fixed') return t;
+  if (!peak?.today) return null;
+  const base = mode === 'peak_start' ? peak.today.start : peak.today.end;
+  const [h, m] = base.split(':').map(Number);
+  const total = Math.max(0, Math.min(23 * 60 + 59, h * 60 + m + offset));
+  return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
+}
+
+function scheduleLabel(t, peak) {
+  const { mode, offset } = parseScheduleTime(t);
+  if (mode === 'fixed') return format12hTime(t);
+  const name = mode === 'peak_start' ? 'Peak start' : 'Peak end';
+  const off = offset ? ` ${offset > 0 ? '+' : '-'}${Math.abs(offset)}m` : '';
+  const at = resolvePeakTime(t, peak);
+  return `${name}${off}${at ? ` · ${format12hTime(at)}` : ''}`;
+}
+
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+function PeakHoursCard({ peak, onSaved, showToast }) {
+  const [editing, setEditing] = useState(false);
+  const [table, setTable] = useState(null);
+  const [length, setLength] = useState(4);
+  if (!peak) return null;
+
+  const startEdit = () => {
+    setTable({ ...peak.peak_start_by_month });
+    setLength(peak.peak_hours);
+    setEditing(true);
+  };
+  const save = async () => {
+    try {
+      await fetchFromBackend('/api/peak_hours', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          peak_start_by_month: Object.fromEntries(Object.entries(table).map(([k, v]) => [k, Number(v)])),
+          peak_hours: Number(length),
+        }),
+      });
+      setEditing(false);
+      onSaved();
+      showToast('Peak hours saved', 'success');
+    } catch {
+      showToast('Could not save peak hours (needs the API token in this browser)', 'error');
+    }
+  };
+
+  return (
+    <div className="ctrl-card glass-panel">
+      <div className="ctrl-card-head">
+        <div className="ctrl-title"><Sunset size={18} /> <span>Peak hours</span></div>
+        {peak.today.peak_now && <span className="ctrl-badge live">Peak now</span>}
+      </div>
+      <div className="ctrl-big">{format12hTime(peak.today.start)} – {format12hTime(peak.today.end)}</div>
+      <p className="ctrl-sub">
+        Today's IESCO peak window. Automations set to <b>Peak start</b> or <b>Peak end</b> follow it as it changes through the year.
+      </p>
+      {!editing ? (
+        <>
+          <div className="peak-months">
+            {MONTHS.map((m, i) => {
+              const st = peak.peak_start_by_month[String(i + 1)];
+              return (
+                <span key={m} className={i === new Date().getMonth() ? 'current' : ''}>
+                  {m} {st}–{(st + peak.peak_hours) % 24}
+                </span>
+              );
+            })}
+          </div>
+          <button type="button" className="ctrl-link" onClick={startEdit}>Edit peak hours</button>
+        </>
+      ) : (
+        <>
+          <div className="peak-edit">
+            {MONTHS.map((m, i) => (
+              <label key={m}>
+                <span>{m}</span>
+                <input type="number" min="0" max="23" value={table[String(i + 1)]}
+                  onChange={(e) => setTable({ ...table, [String(i + 1)]: e.target.value })} />
+              </label>
+            ))}
+            <label>
+              <span>Hours</span>
+              <input type="number" min="1" max="8" value={length} onChange={(e) => setLength(e.target.value)} />
+            </label>
+          </div>
+          <p className="ctrl-sub">Start hour (0–23) for each month, and the window's length.</p>
+          <div className="ctrl-actions">
+            <button type="button" className="cancel-btn" onClick={() => setEditing(false)}>Cancel</button>
+            <button type="button" className="save-btn" onClick={save}><Check size={16} /><span>Save</span></button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+const RESCUE_FIELDS = [
+  { key: 'trigger_soc', label: 'Start at or below', unit: '%' },
+  { key: 'target_soc', label: 'Stop at', unit: '%' },
+  { key: 'max_hours', label: 'Longest rescue', unit: 'h' },
+  { key: 'cooldown_hours', label: 'Cooldown', unit: 'h' },
+];
+
+function RescueCard({ rescue, onChanged, showToast }) {
+  const [form, setForm] = useState(null);
+  const [busy, setBusy] = useState(false);
+  if (!rescue) return null;
+  const s = rescue.settings;
+  const now = rescue.now || {};
+  const st = rescue.state || {};
+  const f = form || s;
+
+  const post = async (url, body) => fetchFromBackend(url, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined, timeout: 60000,
+  });
+
+  const save = async (changes, msg) => {
+    setBusy(true);
+    try {
+      await post('/api/rescue/settings', changes);
+      setForm(null);
+      onChanged();
+      showToast(msg, 'success');
+    } catch {
+      showToast('Not saved: check the values, and that the API token is set in this browser', 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const checkNow = async () => {
+    setBusy(true);
+    try {
+      const ev = await post('/api/rescue/check');
+      onChanged();
+      showToast(`Checked: ${ev.reason}`, 'success');
+    } catch {
+      showToast('Check failed (needs the API token in this browser)', 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const active = !!st.active;
+  return (
+    <div className={`ctrl-card glass-panel ${active ? 'rescue-active' : ''}`}>
+      <div className="ctrl-card-head">
+        <div className="ctrl-title"><LifeBuoy size={18} /> <span>Battery rescue</span></div>
+        <button type="button" className={`toggle-switch ${s.enabled ? 'active' : ''}`} disabled={busy}
+          onClick={() => save({ enabled: !s.enabled }, s.enabled ? 'Battery rescue turned off' : 'Battery rescue turned on')}
+          title={s.enabled ? 'Turn off' : 'Turn on'}>
+          <div className="switch-thumb" />
+        </button>
+      </div>
+
+      <div className="ctrl-big">
+        {active ? 'Charging from grid' : s.enabled ? 'Watching' : 'Off'}
+        {now.soc != null && <span className="ctrl-soc"> · battery {Math.round(now.soc)}%</span>}
+      </div>
+      <p className="ctrl-sub">
+        After a deep discharge, switches every inverter to <b>Solar and Utility</b> so the grid tops the battery up,
+        unless the forecast says the sun will do it in time, then puts the previous charging setting back.
+      </p>
+      {active && st.since && (
+        <p className="ctrl-sub">Started {st.since.slice(11, 16)} at {Math.round(st.start_soc)}% · {now.reason}</p>
+      )}
+      {!active && st.last_event && <p className="ctrl-sub">Last rescue: {st.last_event}</p>}
+
+      {!active && now.checks && (
+        <ul className="rescue-checks">
+          {now.checks.map((c) => (
+            <li key={c.check} className={c.ok ? 'ok' : 'no'}>
+              {c.ok ? <CheckCircle2 size={14} /> : <XCircle size={14} />} {c.check}
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <div className="rescue-fields">
+        {RESCUE_FIELDS.map((fd) => (
+          <label key={fd.key}>
+            <span>{fd.label}</span>
+            <div><input type="number" value={f[fd.key]} onChange={(e) => setForm({ ...f, [fd.key]: e.target.value })} /> {fd.unit}</div>
+          </label>
+        ))}
+      </div>
+      <label className="rescue-check-opt">
+        <input type="checkbox" checked={!!f.use_forecast} onChange={(e) => setForm({ ...f, use_forecast: e.target.checked })} />
+        Wait for the sun if the forecast says it will refill the battery
+      </label>
+      <label className="rescue-check-opt">
+        <input type="checkbox" checked={!!f.allow_during_peak} onChange={(e) => setForm({ ...f, allow_during_peak: e.target.checked })} />
+        Allow grid charging during peak hours
+      </label>
+
+      <div className="ctrl-actions">
+        <button type="button" className="cancel-btn" onClick={checkNow} disabled={busy}>Check now</button>
+        {form && (
+          <button type="button" className="save-btn" disabled={busy}
+            onClick={() => save({
+              trigger_soc: Number(form.trigger_soc), target_soc: Number(form.target_soc),
+              max_hours: Number(form.max_hours), cooldown_hours: Number(form.cooldown_hours),
+              use_forecast: !!form.use_forecast, allow_during_peak: !!form.allow_during_peak,
+            }, 'Rescue settings saved')}>
+            <Check size={16} /><span>Save settings</span>
+          </button>
+        )}
+      </div>
+    </div>
+  );
 }
 
 // Custom Pop-Up Wheel Time Picker Field Component
@@ -218,6 +455,10 @@ export default function Automations() {
   const [editingId, setEditingId] = useState(null);
   const [formName, setFormName] = useState('');
   const [formTime, setFormTime] = useState('08:00');
+  const [formMode, setFormMode] = useState('fixed');
+  const [formOffset, setFormOffset] = useState(0);
+  const [peak, setPeak] = useState(null);
+  const [rescue, setRescue] = useState(null);
   const [formInverter, setFormInverter] = useState('all');
   const [formActions, setFormActions] = useState([]);
   const [activeActionIndex, setActiveActionIndex] = useState(0);
@@ -264,8 +505,16 @@ export default function Automations() {
     }
   };
 
+  const loadControls = async () => {
+    fetchFromBackend('/api/peak_hours').then(setPeak).catch(() => {});
+    fetchFromBackend('/api/rescue', { timeout: 30000 }).then(setRescue).catch(() => {});
+  };
+
   useEffect(() => {
     loadAutomations();
+    loadControls();
+    const t = setInterval(loadControls, 60000);
+    return () => clearInterval(t);
   }, []);
 
   const handleToggle = async (autoId) => {
@@ -297,6 +546,8 @@ export default function Automations() {
     setEditingId(null);
     setFormName('');
     setFormTime('08:00');
+    setFormMode('fixed');
+    setFormOffset(0);
     setFormInverter('all');
     setFormActions([
       { setting_id: 'feed_to_grid', label: 'Solar Feed to Grid', command: 'PEd', value_display: 'Enable Export' }
@@ -308,7 +559,10 @@ export default function Automations() {
   const openEditModal = (auto) => {
     setEditingId(auto.id);
     setFormName(auto.name);
-    setFormTime(auto.time_of_day);
+    const sched = parseScheduleTime(auto.time_of_day);
+    setFormMode(sched.mode);
+    setFormOffset(sched.offset);
+    setFormTime(sched.mode === 'fixed' ? auto.time_of_day : '18:00');
     setFormInverter(auto.inverter_id);
     setFormActions(auto.actions || []);
     setActiveActionIndex(0);
@@ -383,7 +637,8 @@ export default function Automations() {
         const num = parseFloat(val) || 0;
         return {
           ...act,
-          command: `${st.prefix}${num}`,
+          // The server accepts exactly one decimal place (PSDV48.0, not PSDV48).
+          command: `${st.prefix}${num.toFixed(1)}`,
           value_display: `${num} ${st.unit}`,
           num_value: num
         };
@@ -404,7 +659,7 @@ export default function Automations() {
     const payload = {
       id: editingId,
       name: formName.trim(),
-      time_of_day: formTime,
+      time_of_day: buildScheduleTime(formMode, formOffset, formTime),
       inverter_id: formInverter,
       enabled: true,
       actions: formActions
@@ -471,6 +726,11 @@ export default function Automations() {
         </div>
       </div>
 
+      <div className="ctrl-cards">
+        <PeakHoursCard peak={peak} onSaved={loadControls} showToast={showToast} />
+        <RescueCard rescue={rescue} onChanged={loadControls} showToast={showToast} />
+      </div>
+
       {/* Main Content Area */}
       <div className="automations-content">
         {isLoading ? (
@@ -490,7 +750,10 @@ export default function Automations() {
           </div>
         ) : (
           <div className="automations-list">
-            {automations.map((auto) => (
+            {[...automations]
+              // In the order they run today (peak-relative times resolved).
+              .sort((a, b) => (resolvePeakTime(a.time_of_day, peak) || '99').localeCompare(resolvePeakTime(b.time_of_day, peak) || '99'))
+              .map((auto) => (
               <motion.div 
                 key={auto.id} 
                 className={`automation-card glass-panel ${!auto.enabled ? 'disabled' : ''}`}
@@ -500,7 +763,7 @@ export default function Automations() {
                 <div className="card-left-section">
                   <div className="time-badge desktop-only">
                     <Clock size={16} />
-                    <span>{format12hTime(auto.time_of_day)}</span>
+                    <span>{scheduleLabel(auto.time_of_day, peak)}</span>
                   </div>
                   <h3 className="auto-name">{auto.name}</h3>
                 </div>
@@ -519,7 +782,7 @@ export default function Automations() {
                 <div className="card-right-section">
                   <div className="time-badge mobile-only">
                     <Clock size={14} />
-                    <span>{format12hTime(auto.time_of_day)}</span>
+                    <span>{scheduleLabel(auto.time_of_day, peak)}</span>
                   </div>
 
                   <span className="inverter-tag">{auto.inverter_id.toUpperCase()}</span>
@@ -595,13 +858,41 @@ export default function Automations() {
                   </div>
                 </div>
 
-                {/* Row 2: Scheduled Execution Time */}
-                <div className="form-group">
-                  <PopupTimePickerField 
-                    value={formTime} 
-                    onChange={setFormTime} 
-                  />
+                {/* Row 2: When it runs: a fixed time, or relative to the peak window */}
+                <div className="form-row">
+                  <div className="form-group flex-1">
+                    <UnifiedGlassDropdown
+                      label="Runs At"
+                      options={[
+                        { value: 'fixed', label: 'Fixed time' },
+                        { value: 'peak_start', label: 'Peak start' },
+                        { value: 'peak_end', label: 'Peak end' },
+                      ]}
+                      value={formMode}
+                      onChange={setFormMode}
+                    />
+                  </div>
+                  <div className="form-group flex-1">
+                    {formMode === 'fixed' ? (
+                      <PopupTimePickerField value={formTime} onChange={setFormTime} />
+                    ) : (
+                      <div className="embedded-field-box">
+                        <span className="embedded-field-label">Offset (minutes, - for before)</span>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', width: '100%' }}>
+                          <input type="number" step="5" className="embedded-field-input" value={formOffset}
+                            onChange={e => setFormOffset(e.target.value)} />
+                          <span className="num-unit">min</span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 </div>
+                {formMode !== 'fixed' && (
+                  <p className="peak-hint">
+                    Today this runs at {format12hTime(resolvePeakTime(buildScheduleTime(formMode, formOffset, formTime), peak) || '00:00')}.
+                    It moves with the peak window through the year.
+                  </p>
+                )}
 
                 {/* Row 3: Configured Action Settings Carousel */}
                 <div className="form-group">
